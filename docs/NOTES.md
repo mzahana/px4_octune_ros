@@ -33,3 +33,19 @@ Use `/mavros/set_message_interval` MAVROS service, [check here](https://github.c
 rosservice call /mavros/set_message_interval "message_id: 0
 message_rate: 0.0"
 ```
+
+# Set/get parameters
+To set PX4 parameeters using ROS, you can use the MAVROS service service `/mavros/param/set`
+```
+rosservice call /mavros/param/set "param_id: 'MC_PITCHRATE_D'
+value:
+  integer: 0
+  real: 0.003" 
+```
+To get PX4 parameeters using ROS, you can use the MAVROS service service `/mavros/param/get`
+
+List of PX4 multi-rotor controllers parameters
+* MC_PITCHRATE_P. Between 0.01 and 0.6
+* MC_PITCHRATE_I
+* MC_PITCHRATE_D
+* MC_PITCH_P
