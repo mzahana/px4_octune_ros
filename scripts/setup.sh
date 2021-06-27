@@ -30,11 +30,10 @@ fi
 # Make sure we have python3-pip installed
 echo "Installing python3-pip..." && echo
 sleep 1
-sudo apt install python3-pip -y
+#sudo apt install python3-pip -y
+sudo apt install python-pip -y
 
 # Install octune
 cd $HOME/src/octune
-python3 setup.py develop --user
-
-echo "OCTUNE package is installed." && echo
-sleep 1
+#python3 setup.py develop --user
+python setup.py develop --user
