@@ -38,7 +38,7 @@ cd $HOME/src/octune && git checkout python2
 
 sudo pip uninstall numpy
 pip install numpy
-pip install matplotlib--user
+pip install matplotlib --user
 pip install scipy --user
 
 # Install octune
