@@ -30,10 +30,11 @@ echo && echo "Checking out python2 branch..." echo
 cd $HOME/src/octune && git checkout python2
 
 # Make sure we have python3-pip installed
-echo "Installing python3-pip..." && echo
-sleep 1
+
+#echo "Installing python-pip..." && echo
+#sleep 1
 #sudo apt install python3-pip -y
-sudo apt install python-pip -y
+#sudo apt install python-pip -y
 
 # Install octune
 cd $HOME/src/octune
