@@ -36,6 +36,11 @@ cd $HOME/src/octune && git checkout python2
 #sudo apt install python3-pip -y
 #sudo apt install python-pip -y
 
+sudo pip uninstall numpy
+pip install numpy
+pip install matplotlib--user
+pip install scipy --user
+
 # Install octune
 cd $HOME/src/octune
 #python3 setup.py develop --user
