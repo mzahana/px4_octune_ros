@@ -26,6 +26,8 @@ else
     cd $HOME/src/octune
     git pull
 fi
+echo && echo "Checking out python2 branch..." echo
+cd $HOME/src/octune && git checkout python2
 
 # Make sure we have python3-pip installed
 echo "Installing python3-pip..." && echo
