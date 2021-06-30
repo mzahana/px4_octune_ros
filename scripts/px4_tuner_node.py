@@ -24,7 +24,7 @@ class PX4Tuner:
         self._cmd_pos_dict=             {'time':[], 'x':[], 'y':[], 'z':[]}
 
         # Feedback, attitude rates, dictionary, two arrays, time & data
-        self._att_rate_dicte=           {'time':[], 'x':[], 'y':[], 'z':[]}
+        self._att_rate_dict=           {'time':[], 'x':[], 'y':[], 'z':[]}
         # Feedback, attitude,  dictionary, two arrays, time & data
         self._att_dict=                 {'time':[], 'x':[], 'y':[], 'z':[]}
         # Feedback, local velocity,  dictionary, two arrays, time & data
@@ -61,6 +61,53 @@ class PX4Tuner:
         rospy.Subscriber("mavros/local_position/pose", PoseStamped, self.poseCb)
         # Feedback, local velocity
         rospy.Subscriber("mavros/local_position/velocity_local", TwistStamped, self.velCb)
+
+        # Request higher data streams
+        ret = self.increaseStreamRates()
+        if not ret:
+            rospy.logerr("Could not request higher stream rate. Exiting...")
+            exit()
+
+    def increaseStreamRates(self):
+        """Requests from PX4 an increase in stream rates of commanded/feedback signals
+
+        @return True if all stream requests succedded, False otherwise 
+        """
+
+        # MAVLINK MSG IDs
+        ACTUATOR_CONTROL_TARGET=140
+        ATTITUDE_TARGET=83
+        POSITION_TARGET_LOCAL_NED=85
+        HIGHRES_IMU=105
+        ATTITUDE_QUATERNION=31
+        LOCAL_POSITION_NED=32
+        msg_id_list=[  ACTUATOR_CONTROL_TARGET,
+                    ATTITUDE_TARGET,
+                    POSITION_TARGET_LOCAL_NED,
+                    HIGHRES_IMU,
+                    ATTITUDE_QUATERNION,
+                    LOCAL_POSITION_NED
+                ]
+        # TODO Implement rosservice call of /mavros/set_message_interval
+        rospy.wait_for_service('mavros/set_message_interval')
+        is_req_sent = True
+        for id in msg_id_list:
+            try:
+                msg_stream_req = MessageIntervalRequest()
+                msg_stream_req.message_id = id
+                msg_stream_req.message_rate = 100.0 # Hz
+                streamReqSrv = rospy.ServiceProxy('mavros/set_message_interval', MessageInterval)
+                msg_stream_resp = streamReqSrv(msg_stream_req)
+                is_req_sent = is_req_sent and  msg_stream_resp.success
+                    
+            except rospy.ServiceException, e:
+                rospy.logerr('Failed to call mavros/set_message_interval for msg id= %s, error: %s', id,e)
+                is_req_sent = is_req_sent and False
+
+        if is_req_sent:
+            rospy.loginfo("Requesting higher data stream: SUCCESS")
+        
+        return is_req_sent
 
     def insertData(self, dict=None, t=None, x=None, y=None, z=None):
         """Inserts a data point into a dictionary dict
@@ -101,22 +148,10 @@ class PX4Tuner:
         self._cmd_att_dict=             {'time':[], 'x':[], 'y':[], 'z':[]}
         self._cmd_vel_dict=             {'time':[], 'x':[], 'y':[], 'z':[]}
         self._cmd_pos_dict=             {'time':[], 'x':[], 'y':[], 'z':[]}
-        self._att_rate_dicte=           {'time':[], 'x':[], 'y':[], 'z':[]}
+        self._att_rate_dict=            {'time':[], 'x':[], 'y':[], 'z':[]}
         self._att_dict=                 {'time':[], 'x':[], 'y':[], 'z':[]}
         self._vel_dict=                 {'time':[], 'x':[], 'y':[], 'z':[]}
         self._pos_dict=                 {'time':[], 'x':[], 'y':[], 'z':[]}
-
-    def increaseStreamRates(self):
-        """Requests from PX4 an increase in stream rates of commanded/feedback signals
-        """
-        ACTUATOR_CONTROL_TARGET=140
-        ATTITUDE_TARGET=83
-        POSITION_TARGET_LOCAL_NED=85
-        HIGHRES_IMU=105
-        ATTITUDE_QUATERNION=31
-        LOCAL_POSITION_NED=32
-        # TODO Implement rosservice call of /mavros/set_message_interval
-        pass
 
     
     def cmdAttCb(self, msg):
@@ -139,9 +174,43 @@ class PX4Tuner:
         z = msg.controls[2]
 
         if self._record_data:
-            self._cmd_att_rate_dict = self.insertData(dict=self._cmd_att_rate_dict, t=t, x=x, y=y, z=z)
+            self._cmd_att_rate_dict = self.insertData(dict=self._cmd_att_rate_dict, t=t_micro, x=x, y=y, z=z)
             if self._debug:
-                rospy.loginfo_throttle("cmd_att_rate_dict length is: %s",len(self._cmd_att_rate_dict['time']))
+                rospy.loginfo_throttle(1, "cmd_att_rate_dict length is: %s",len(self._cmd_att_rate_dict['time']))
+
+    def cmdPosCb(self, msg):
+        if msg is None:
+            return
+        # TODO
+
+    def rawImuCb(self, msg):
+        if msg is None:
+            return
+        t = rospy.Time(secs=msg.header.stamp.secs, nsecs=msg.header.stamp.nsecs)
+        t_micro = t.to_nsec()/1000
+        x=msg.angular_velocity.x
+        y=msg.angular_velocity.y
+        z=msg.angular_velocity.z
+
+        if self._record_data:
+            self._att_rate_dict = self.insertData(dict=self._att_rate_dict, t=t_micro, x=x, y=y, z=z)
+            if self._debug:
+                rospy.loginfo_throttle(1, "att_rate_dict length is: %s",len(self._att_rate_dict['time']))
+
+    def imuCb(self, msg):
+        if msg is None:
+            return
+        # TODO
+    
+    def poseCb(self, msg):
+        if msg is None:
+            return
+        # TODO
+
+    def velCb(self, msg):
+        if msg is None:
+            return
+        # TODO
 
     def apllyStepInput(self):
         """Sends local velocity step inputs to excite the system
@@ -183,31 +252,6 @@ class PX4Tuner:
         """
         # TODO 
         pass
-
-    def cmdPosCb(self, msg):
-        if msg is None:
-            return
-        # TODO
-
-    def rawImuCb(self, msg):
-        if msg is None:
-            return
-        # TODO
-
-    def imuCb(self, msg):
-        if msg is None:
-            return
-        # TODO
-    
-    def poseCb(self, msg):
-        if msg is None:
-            return
-        # TODO
-
-    def velCb(self, msg):
-        if msg is None:
-            return
-        # TODO
         
         
 def main():
