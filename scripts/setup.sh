@@ -57,9 +57,10 @@ else
     echo $SUDO_PASS | sudo -S pip uninstall -y numpy
 fi
 
-pip install numpy
+pip install numpy --user
 pip install matplotlib --user
 pip install scipy --user
+pip install pandas --user
 
 # Install octune
 cd $HOME/src/octune

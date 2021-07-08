@@ -8,6 +8,7 @@ from geometry_msgs.msg import PoseStamped
 from geometry_msgs.msg import TwistStamped
 from math import ceil
 from octune.optimization import BackProbOptimizer
+import pandas as pd
 
 class PX4Tuner:
     def __init__(self):
@@ -123,7 +124,7 @@ class PX4Tuner:
         if t is None or x is None or y is None or z is None or dict is None:
             rospy.logerr("[insertData] One of the input arguments is None")
             return
-        # TODO Make sure that the input dict is with the right data struction, time & data arrays
+        # TODO Make sure that the input dict is with the right data structure, time & data arrays
 
         out_dict=dict
         out_dict['time'].append(t)
@@ -252,14 +253,24 @@ class PX4Tuner:
         """
         # TODO 
         pass
+
+    def alignData(self):
+        t1=np.arange(10)+100.0
+        t2=np.arange(5)+101.0
+        d1=pd.to_timedelta(t1, unit='s')
+        d2=pd.to_timedelta(t2, unit='s')
+        print("--------------------")
+        print(type(d1))
         
         
 def main():
+    obj.alignData()
     rospy.init_node("px4_tuner_node", anonymous=True)
     rospy.loginfo("Starting px4_tuner_node...\n")
     obj = PX4Tuner()
     obj._record_data=True
     obj._debug=True
+
     rospy.spin()
 
 if __name__ == "__main__":
