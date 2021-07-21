@@ -72,6 +72,8 @@ class PX4Tuner:
     def increaseStreamRates(self):
         """Requests from PX4 an increase in stream rates of commanded/feedback signals
 
+        Returns
+        --
         @return True if all stream requests succedded, False otherwise 
         """
 
@@ -113,12 +115,16 @@ class PX4Tuner:
     def insertData(self, dict=None, t=None, x=None, y=None, z=None):
         """Inserts a data point into a dictionary dict
 
+        Parameters
+        --
         @param dict Input dictionary with two arrays/lists, time and data
         @param t Timestamp in micro seconds
         @param x Data point in x axis
         @param y Data point in y axis
         @param z Data point in z axis
 
+        Returns
+        --
         @return out_dict Populated dictionary after data point insertion
         """
         if t is None or x is None or y is None or z is None or dict is None:
@@ -170,9 +176,9 @@ class PX4Tuner:
 
         t = rospy.Time(secs=msg.header.stamp.secs, nsecs=msg.header.stamp.nsecs)
         t_micro = t.to_nsec()/1000
-        x = msg.controls[0]
-        y = msg.controls[1]
-        z = msg.controls[2]
+        x = msg.controls[0] # commanded roll rate
+        y = msg.controls[1] # commanded pitch rate
+        z = msg.controls[2] # commanded yaw rate
 
         if self._record_data:
             self._cmd_att_rate_dict = self.insertData(dict=self._cmd_att_rate_dict, t=t_micro, x=x, y=y, z=z)
@@ -254,6 +260,112 @@ class PX4Tuner:
         # TODO 
         pass
 
+    def prepRollRate(self):
+        """Merges roll rate data (target and actual), resample, and align their timestamps.
+        Uses self._cmd_att_rate_dict and self._att_rate_dict
+
+        Returns
+        --
+        @return prep_roll_rate_cmd Numpy array
+        @return prep_roll_rate Numpy array
+        """
+        prep_roll_rate_cmd=None
+        prep_roll_rate=None
+        # Sanity check
+        if len(self._cmd_att_rate_dict['time']) < 1:
+            rospy.logerr("[prepRollRate] No commanded attitude rate data to process")
+            return prep_roll_rate_cmd, prep_roll_rate
+
+        if len(self._att_rate_dict['time']) < 1:
+            rospy.logerr("[prepRollRate] No feedback attitude rate data to process")
+            return prep_roll_rate_cmd, prep_roll_rate
+        
+        # TODO Verify the following implementation in simulation
+
+        # setup the time index list
+        #command
+        cmd_idx=pd.to_timedelta(self._cmd_att_rate_dict['time'], unit='us') # 'us' = micro seconds
+        cmd_roll_rate = pd.DataFrame(self._cmd_att_rate_dict['x'], index=cmd_idx, columns =['cmd_roll_rate'])
+        # feedback
+        fb_idx=pd.to_timedelta(self._att_rate_dict['time'], unit='us') # 'us' = micro seconds
+        fb_roll_rate = pd.DataFrame(self._att_rate_dict['x'], index=fb_idx, columns =['roll_rate'])
+
+        # Merge
+        df_merged =cmd_roll_rate.merge(fb_roll_rate, how='outer', left_index=True, right_index=True)
+
+        # Resample
+        dt_str=str(self._sampling_dt*1000.0)+'L' # L is for milli-second in Pnadas
+        df_resampled = df_merged.resample(dt_str).mean().interpolate()
+
+        # Find common time range
+        min_idx=None
+        max_idx=None
+        if (cmd_roll_rate.index[0] > fb_roll_rate.index[0]):
+            min_idx=cmd_roll_rate.index[0]
+        else:
+            min_idx=fb_roll_rate.index[0]
+
+        if (cmd_roll_rate.index[-1] < fb_roll_rate.index[-1]):
+            max_idx=cmd_roll_rate.index[-1]
+        else:
+            max_idx=fb_roll_rate.index[-1]
+
+        df_common=df_resampled[min_idx:max_idx]
+
+        # Finally extract processed data as lists
+        prep_roll_rate_cmd = df_common['cmd_roll_rate'].tolist()
+        prep_roll_rate = df_common['roll_rate'].tolist()
+
+        return prep_roll_rate_cmd, prep_roll_rate
+
+    def prepPitchRate(self):
+        """Merges Pitch rate data (target and actual), resample, and align their timestamps.
+        Uses self._cmd_att_rate_dict and self._att_rate_dict
+
+        Returns
+        --
+        @return prep_pitch_rate_cmd Numpy array
+        @return prep_pitch_rate Numpy array
+        """
+        prep_pitch_rate_cmd=None
+        prep_pitch_rate=None
+        # Sanity check
+        if len(self._cmd_att_rate_dict['time']) < 1:
+            rospy.logerr("[prepPitchRate] No commanded attitude rate data to process")
+            return prep_pitch_rate_cmd, prep_pitch_rate
+
+        if len(self._att_rate_dict['time']) < 1:
+            rospy.logerr("[prepPitchRate] No feedback attitude rate data to process")
+            return prep_pitch_rate_cmd, prep_pitch_rate
+        
+        # TODO implement data pre-processing
+
+        return prep_pitch_rate_cmd, prep_pitch_rate
+
+    def prepYawRate(self):
+        """Merges Yaw rate data (target and actual), resample, and align their timestamps.
+        Uses self._cmd_att_rate_dict and self._att_rate_dict
+
+        Returns
+        --
+        @return prep_yaw_rate_cmd Numpy array
+        @return prep_yaw_rate Numpy array
+        """
+        prep_yaw_rate_cmd=None
+        prep_yaw_rate=None
+        # Sanity check
+        if len(self._cmd_att_rate_dict['time']) < 1:
+            rospy.logerr("[prepYawRate] No commanded attitude rate data to process")
+            return prep_yaw_rate_cmd, prep_yaw_rate
+
+        if len(self._att_rate_dict['time']) < 1:
+            rospy.logerr("[prepYawRate] No feedback attitude rate data to process")
+            return prep_yaw_rate_cmd, prep_yaw_rate
+        
+        # TODO implement data pre-processing
+
+        return prep_yaw_rate_cmd, prep_yaw_rate
+
     def alignData(self):
         t1=np.arange(10)+100.0
         t2=np.arange(5)+101.0
@@ -264,7 +376,6 @@ class PX4Tuner:
         
         
 def main():
-    obj.alignData()
     rospy.init_node("px4_tuner_node", anonymous=True)
     rospy.loginfo("Starting px4_tuner_node...\n")
     obj = PX4Tuner()
