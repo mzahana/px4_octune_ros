@@ -1,0 +1,46 @@
+<launch>
+    <!--
+        This script launches an offboard position controller 
+        which takes position setpoints and publishes velocity commands to PX4 theough MAVROS in OFFBOARD flight mode
+        
+        @author Mohamed Abdelkader, mohamedashraf123@gmail.com
+    -->
+
+    <arg name="xy_kP" default="1.0"/>
+    <arg name="xy_kI" default="0.02"/>
+    <arg name="xy_vMAX" default="2.0"/>
+
+    <arg name="z_kP" default="2.0"/>
+    <arg name="z_kI" default="0.01"/>
+    <arg name="vUpMAX" default="2.0"/>
+    <arg name="vDownMAX" default="0.5"/>
+
+    <arg name="yaw_kP" default="1.0"/>
+    <arg name="yaw_radius" default="3.0"/>
+    <arg name="max_yaw_rate" default="0.9"/> <!-- this is in rad/s ~ 50 deg/s-->
+
+
+    <arg name="respawn" default="false"/>
+    
+    <!-- Position controller -->
+    <node pkg="px4_octune_ros" name="mavros_offboard_controller_node" type="mavros_offboard_controller.py" output="screen" clear_params="true" required="$(eval not respawn)" respawn="$(arg respawn)">
+        <!-- Lateral controller gains -->
+        <param name="horizontal_controller/kP" value="$(arg xy_kP)"/>
+        <param name="horizontal_controller/kI" value="$(arg xy_kI)"/>
+
+        <!-- Vertical controller gains -->
+        <param name="vertical_controller/kP" value="$(arg z_kP)"/>
+        <param name="vertical_controller/kI" value="$(arg z_kI)"/>
+
+        <!-- Maximum horizontal vlocity magnitude -->
+        <param name="horizontal_controller/vMAX" value="$(arg xy_vMAX)"/>
+        <!-- Maximum verical vlocity magnitude (ONLY POSITIVE VALUES) -->
+        <param name="vertical_controller/vUpMAX" value="$(arg vUpMAX)"/>
+        <param name="vertical_controller/vDownMAX" value="$(arg vDownMAX)"/>
+
+        <param name="yaw_controller/kP" value="$(arg yaw_kP)"/>
+        <param name="yaw_controller/yaw_radius" value="$(arg yaw_radius)"/>
+        <param name="yaw_controller/max_yaw_rate" value="$(arg max_yaw_rate)"/>
+
+    </node>
+</launch>

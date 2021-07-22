@@ -1,0 +1,21 @@
+<launch>
+
+    <!-- 
+        PX4 SITL + Gazebo + MAVROS
+    -->
+    <include file="$(find px4)/launch/mavros_posix_sitl.launch" >
+    </include>
+
+    <!--
+        MAVROS offboard position controller
+    -->
+    <include file="$(find px4_octune_ros)/launch/offboard_controller.launch" >
+    </include>
+
+    <!--
+        px4_octune_node
+    -->
+    <include file="$(find px4_octune_ros)/launch/start_tuner.launch">
+    </include>
+    
+</launch>

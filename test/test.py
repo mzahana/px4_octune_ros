@@ -42,6 +42,9 @@ def alignData():
         max_idx=df2.index[-1]
 
     df_common=df_resampled[min_idx:max_idx]
+    dt=max_idx-min_idx
+    
+    print("df_common has data of total time={}\n".format(dt.total_seconds()))
 
     print("----------Before resampling ----------")
     # print(df1)

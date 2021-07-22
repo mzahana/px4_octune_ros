@@ -1,0 +1,7 @@
+# Service for setting the Max velocity
+float64 xy_vel
+float64 up_vel
+float64 down_vel
+---
+bool success
+string message

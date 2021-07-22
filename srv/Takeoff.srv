@@ -1,0 +1,5 @@
+# Takeoff altitude service msg
+
+# Takeoff altitude relative to ground altitude in local frame, meters
+float32 altitude
+---
