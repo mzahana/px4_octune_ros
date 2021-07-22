@@ -15,6 +15,7 @@
     <arg name="vUpMAX" default="2.0"/>
     <arg name="vDownMAX" default="0.5"/>
 
+    <arg name="lock_heading" default="False"/>
     <arg name="yaw_kP" default="1.0"/>
     <arg name="yaw_radius" default="3.0"/>
     <arg name="max_yaw_rate" default="0.9"/> <!-- this is in rad/s ~ 50 deg/s-->
@@ -38,6 +39,7 @@
         <param name="vertical_controller/vUpMAX" value="$(arg vUpMAX)"/>
         <param name="vertical_controller/vDownMAX" value="$(arg vDownMAX)"/>
 
+        <param name="lock_heading" value="$(arg lock_heading)"/>
         <param name="yaw_controller/kP" value="$(arg yaw_kP)"/>
         <param name="yaw_controller/yaw_radius" value="$(arg yaw_radius)"/>
         <param name="yaw_controller/max_yaw_rate" value="$(arg max_yaw_rate)"/>

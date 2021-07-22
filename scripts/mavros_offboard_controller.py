@@ -32,7 +32,7 @@ import tf
 
 from math import pi, sqrt, atan2
 from std_msgs.msg import Float32
-from std_srvs.srv import Empty, EmptyResponse
+from std_srvs.srv import Empty, EmptyResponse, SetBool, SetBoolResponse
 from geometry_msgs.msg import Vector3, Point, PoseStamped, TwistStamped, PointStamped
 from sensor_msgs.msg import NavSatFix
 from mavros_msgs.msg import PositionTarget, State, Altitude, ExtendedState
@@ -166,6 +166,8 @@ class PositionController:
         self.vDownMAX_ = rospy.get_param('~vertical_controller/vDownMAX', 0.5)
 
 
+        # Compute yaw towards next setpoint, or lock it
+        self.lock_heading_=rospy.get_param('~lock_heading', False)
         # Yaw error, rad
         self.eyaw_ = 0.0
         # Yaw rate setpoint
@@ -190,13 +192,27 @@ class PositionController:
         self.isArmed_ = False
 
         # Service for modifying horizontal PI controller gains 
-        rospy.Service('horizontal_controller/pid_gains', PIDGains, self.setHorizontalPIDCallback)
+        rospy.Service('offboard_controller/horizontal/pid_gains', PIDGains, self.setHorizontalPIDCallback)
         # Service for modifying vertical PI controller gains 
-        rospy.Service('vertical_controller/pid_gains', PIDGains, self.setVerticalPIDCallback)
+        rospy.Service('offboard_controller/vertical/pid_gains', PIDGains, self.setVerticalPIDCallback)
         # Service for modifying yaw P controller gain
-        rospy.Service('yaw_controller/pid_gains', PIDGains, self.setYawPIDCallback)
+        rospy.Service('offboard_controller/yaw/pid_gains', PIDGains, self.setYawPIDCallback)
         # Service for modifying velocity contraints
         rospy.Service('offboard_controller/max_vel', MaxVel, self.setMaxVelCb)
+        # Lock heading
+        rospy.Service('offboard_controller/lock_heading', SetBool, self.lockHeadingCb)
+
+    def lockHeadingCb(self, req):
+        self.lock_heading_=req.data
+
+        resp=SetBoolResponse()
+        resp.success=True
+        if (req.data):
+            resp.message="Heading is locked"
+        else:
+            resp.message="Heading is not locked"
+        
+        return resp
 
     def setMaxVelCb(self, req):
         resp=MaxVelResponse()
@@ -298,25 +314,27 @@ class PositionController:
     def computeYawRateSp(self):
         """Computes the yaw rate setpoint based on the yaw error between target and current drone positions
         """
-        yaw_err = atan2(self.ey_,self.ex_)
-        radius = sqrt(self.ex_**2 + self.ey_**2)
-        if radius < self.yawRadius_:
-            self.yawrate_cmd_ = 0.0
-        else:
-            self.yawrate_cmd_ = self.kP_yaw_*yaw_err    # proportional yaw controller
-        
-        # Cap yaw rate
-        if self.yawrate_cmd_ > self.maxYawRate_:
-            self.yawrate_cmd_ = np.sign(self.yawrate_cmd_) * self.maxYawRate_
+        if (not self.lock_heading_):
+            yaw_err = atan2(self.ey_,self.ex_)
+            radius = sqrt(self.ex_**2 + self.ey_**2)
+            if radius < self.yawRadius_:
+                self.yawrate_cmd_ = 0.0
+            else:
+                self.yawrate_cmd_ = self.kP_yaw_*yaw_err    # proportional yaw controller
+            
+            # Cap yaw rate
+            if self.yawrate_cmd_ > self.maxYawRate_:
+                self.yawrate_cmd_ = np.sign(self.yawrate_cmd_) * self.maxYawRate_
 
         return self.yawrate_cmd_
 
     def computeYawSp(self):
         """Computes the required yaw setpoint to point towards the next target position
         """
-        radius = sqrt(self.ex_**2 + self.ey_**2)
-        if radius > self.yawRadius_:
-            self.yaw_cmd_ = atan2(self.ey_,self.ex_)
+        if (not self.lock_heading_):
+            radius = sqrt(self.ex_**2 + self.ey_**2)
+            if radius > self.yawRadius_:
+                self.yaw_cmd_ = atan2(self.ey_,self.ex_)
 
         return self.yaw_cmd_
 
