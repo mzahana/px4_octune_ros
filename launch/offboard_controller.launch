@@ -6,9 +6,9 @@
         @author Mohamed Abdelkader, mohamedashraf123@gmail.com
     -->
 
-    <arg name="xy_kP" default="1.0"/>
-    <arg name="xy_kI" default="0.02"/>
-    <arg name="xy_vMAX" default="2.0"/>
+    <arg name="xy_kP" default="1.5"/>
+    <arg name="xy_kI" default="0.01"/>
+    <arg name="xy_vMAX" default="5.0"/>
 
     <arg name="z_kP" default="2.0"/>
     <arg name="z_kI" default="0.01"/>
