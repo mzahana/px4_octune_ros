@@ -1,14 +1,17 @@
 #!/usr/bin/env python
 
+from time import sleep
 import rospy
 from mavros_msgs.msg import AttitudeTarget, ActuatorControl, PositionTarget
 from mavros_msgs.srv import MessageInterval, MessageIntervalRequest, MessageIntervalResponse
+from rospy.core import rospydebug
 from sensor_msgs.msg import Imu
-from geometry_msgs.msg import PoseStamped
-from geometry_msgs.msg import TwistStamped
+from geometry_msgs.msg import PoseStamped, TwistStamped, Point
+from std_srvs.srv import Empty
 from math import ceil
 from octune.optimization import BackProbOptimizer
 import pandas as pd
+import matplotlib.pyplot as plt
 
 class PX4Tuner:
     def __init__(self):
@@ -34,7 +37,7 @@ class PX4Tuner:
         self._pos_dict=                 {'time':[], 'x':[], 'y':[], 'z':[]}
 
         # System excitation time, seconds
-        self._excitation_t = rospy.get_param('~excitation_t', 2.0)
+        self._excitation_t = rospy.get_param('~excitation_t', 5.0)
 
         # Sampling/upsampling time, seconds
         self._sampling_dt = rospy.get_param('~sampling_dt', 0.01)
@@ -45,7 +48,11 @@ class PX4Tuner:
         # Flag to record/store data
         self._record_data=False
 
+        # Setpoint msg
+        self._setpoint_msg=Point()
 
+        # Setpoint publisher
+        self._setpoint_pub = rospy.Publisher('offboard_controller/setpoint/local_pos', Point, queue_size=10)
 
         # Commanded attitude
         rospy.Subscriber("mavros/setpoint_raw/target_attitude",AttitudeTarget, self.cmdAttCb)
@@ -63,10 +70,13 @@ class PX4Tuner:
         # Feedback, local velocity
         rospy.Subscriber("mavros/local_position/velocity_local", TwistStamped, self.velCb)
 
+        # Service for testing data pre-process
+        rospy.Service('px4_octune/process_data', Empty, self.prepDataSrv)
+
         # Request higher data streams
         ret = self.increaseStreamRates()
         if not ret:
-            rospy.logerr("Could not request higher stream rate. Exiting...")
+            rospy.logerr("Could not request higher stream rate. Shutting down px4_tuner_node ...")
             exit()
 
     def increaseStreamRates(self):
@@ -92,7 +102,13 @@ class PX4Tuner:
                     LOCAL_POSITION_NED
                 ]
         # TODO Implement rosservice call of /mavros/set_message_interval
-        rospy.wait_for_service('mavros/set_message_interval')
+        try:
+            rospy.wait_for_service('mavros/set_message_interval', timeout=2.0)
+        except rospy.ServiceException, e:
+            rospy.logerr("Waiting for mavros/set_message_interval timedout!")
+            is_req_sent=False
+            return is_req_sent
+
         is_req_sent = True
         for id in msg_id_list:
             try:
@@ -159,31 +175,72 @@ class PX4Tuner:
         self._att_dict=                 {'time':[], 'x':[], 'y':[], 'z':[]}
         self._vel_dict=                 {'time':[], 'x':[], 'y':[], 'z':[]}
         self._pos_dict=                 {'time':[], 'x':[], 'y':[], 'z':[]}
+            
+            
+    def prepDataSrv(self, req):
+        """Data pre-processing service (for testing) 
+        """
+        if(self._debug):
+            rospy.loginfo("Stopping data recording")
+        self.stopsRecordingData()
+        if(self._debug):
+            rospy.loginfo("Resetting data dictionaries")
+        self.resetDict()
+        if(self._debug):
+            rospy.loginfo("Starting data recording")
+        self.startRecordingData()
+        if(self._debug):
+            rospy.loginfo("Waiting for %s seconds", self._excitation_t)
+        rospy.sleep(rospy.Duration(secs=self._excitation_t))
+        if(self._debug):
+            rospy.loginfo("Stopping data recording")
+        self.stopsRecordingData()
+        if(self._debug):
+            rospy.loginfo("Processing Roll Rate data")
+        roll_rate_cmd, roll_rate = self.prepRollRate()
 
-    
+        if (roll_rate_cmd is not None and roll_rate is not None):
+            rospy.loginfo("Roll rate data is processed")
+        else:
+            rospy.logwarn("Roll rate data processing failed")
+
+        if(self._debug):
+            rospy.loginfo("Processing Pitch Rate data")
+        pitch_rate_cmd, pitch_rate = self.prepPitchRate()
+
+        if (pitch_rate_cmd is not None and pitch_rate is not None):
+            rospy.loginfo("Pitch rate data is processed")
+        else:
+            rospy.logwarn("Pitch rate data processing failed")
+        
+        if self._debug:
+            plt.show()
+
+        return []
+
+    # ---------------------------- Callbacks ----------------------------#
+
     def cmdAttCb(self, msg):
         if msg is None:
             return
-        
-        t = rospy.Time(secs=msg.header.stamp.secs, nsecs=msg.header.stamp.nsecs)
-        t_micro = t.to_nsec()/1000
-            
-        
-
-    def cmdRatesCb(self, msg):
-        if msg is None:
-            return
 
         t = rospy.Time(secs=msg.header.stamp.secs, nsecs=msg.header.stamp.nsecs)
         t_micro = t.to_nsec()/1000
-        x = msg.controls[0] # commanded roll rate
-        y = msg.controls[1] # commanded pitch rate
-        z = msg.controls[2] # commanded yaw rate
+        x = msg.body_rate.x # commanded roll rate
+        y = msg.body_rate.y # commanded pitch rate
+        z = msg.body_rate.z # commanded yaw rate
 
         if self._record_data:
             self._cmd_att_rate_dict = self.insertData(dict=self._cmd_att_rate_dict, t=t_micro, x=x, y=y, z=z)
             if self._debug:
                 rospy.loginfo_throttle(1, "cmd_att_rate_dict length is: %s",len(self._cmd_att_rate_dict['time']))
+
+
+    def cmdRatesCb(self, msg):
+        if msg is None:
+            return
+
+        
 
     def cmdPosCb(self, msg):
         if msg is None:
@@ -218,6 +275,8 @@ class PX4Tuner:
         if msg is None:
             return
         # TODO
+
+    # ------------------------------------- Functions -------------------------------------#
 
     def apllyStepInput(self):
         """Sends local velocity step inputs to excite the system
@@ -260,6 +319,68 @@ class PX4Tuner:
         # TODO 
         pass
 
+    def prepData(self, cmd_df=None, fb_df=None, cmd_data_label=None, data_label=None):
+        """Merges data (target and actual), resample, and align their timestamps.
+
+        Parameters
+        --
+        @param cmd_df Pandas Dataframe of commanded data
+        @param fb_df Pandas Dataframe of feedback data
+
+        Return
+        --
+        @return prep_cmd_data Prepared commanded data as a Python list
+        @return prep_fb_data Prepared feedback data as a Python list
+        """
+        prep_cmd_data=None
+        prep_data=None
+        if cmd_df is None:
+            rospy.logerr("Commanded dataframe is None")
+            return prep_cmd_data,prep_data
+        if fb_df is None:
+            rospy.logerr("Feedback dataframe is None")
+            return prep_cmd_data,prep_data
+        if cmd_data_label is None:
+            rospy.logerr("Commanded data label is None")
+            return prep_cmd_data,prep_data
+        if data_label is None:
+            rospy.logerr("Feedback data label is None")
+            return prep_cmd_data,prep_data
+
+        # Merge
+        df_merged =cmd_df.merge(fb_df, how='outer', left_index=True, right_index=True)
+
+        # Resample
+        dt_str=str(self._sampling_dt*1000.0)+'L' # L is for milli-second in Pandas
+        df_resampled = df_merged.resample(dt_str).mean().interpolate()
+
+        # Find common time range
+        min_idx=None
+        max_idx=None
+        if (cmd_df.index[0] > fb_df.index[0]):
+            min_idx=cmd_df.index[0]
+        else:
+            min_idx=fb_df.index[0]
+
+        if (cmd_df.index[-1] < fb_df.index[-1]):
+            max_idx=cmd_df.index[-1]
+        else:
+            max_idx=fb_df.index[-1]
+
+        df_common=df_resampled[min_idx:max_idx]
+
+        if (self._debug):
+            rospy.loginfo("Total time for processed data = %s seocond(s)\n", (max_idx-min_idx).total_seconds())
+            df_common.plot()
+            #plt.show()
+
+        # Finally extract processed data as lists
+        prep_cmd_data =  df_common[cmd_data_label].tolist()
+        prep_data = df_common[data_label].tolist()
+
+        return prep_cmd_data, prep_data
+
+
     def prepRollRate(self):
         """Merges roll rate data (target and actual), resample, and align their timestamps.
         Uses self._cmd_att_rate_dict and self._att_rate_dict
@@ -280,7 +401,7 @@ class PX4Tuner:
             rospy.logerr("[prepRollRate] No feedback attitude rate data to process")
             return prep_roll_rate_cmd, prep_roll_rate
         
-        # TODO Verify the following implementation in simulation
+        
 
         # setup the time index list
         #command
@@ -290,31 +411,7 @@ class PX4Tuner:
         fb_idx=pd.to_timedelta(self._att_rate_dict['time'], unit='us') # 'us' = micro seconds
         fb_roll_rate = pd.DataFrame(self._att_rate_dict['x'], index=fb_idx, columns =['roll_rate'])
 
-        # Merge
-        df_merged =cmd_roll_rate.merge(fb_roll_rate, how='outer', left_index=True, right_index=True)
-
-        # Resample
-        dt_str=str(self._sampling_dt*1000.0)+'L' # L is for milli-second in Pnadas
-        df_resampled = df_merged.resample(dt_str).mean().interpolate()
-
-        # Find common time range
-        min_idx=None
-        max_idx=None
-        if (cmd_roll_rate.index[0] > fb_roll_rate.index[0]):
-            min_idx=cmd_roll_rate.index[0]
-        else:
-            min_idx=fb_roll_rate.index[0]
-
-        if (cmd_roll_rate.index[-1] < fb_roll_rate.index[-1]):
-            max_idx=cmd_roll_rate.index[-1]
-        else:
-            max_idx=fb_roll_rate.index[-1]
-
-        df_common=df_resampled[min_idx:max_idx]
-
-        # Finally extract processed data as lists
-        prep_roll_rate_cmd = df_common['cmd_roll_rate'].tolist()
-        prep_roll_rate = df_common['roll_rate'].tolist()
+        prep_roll_rate_cmd, prep_roll_rate=self.prepData(cmd_df=cmd_roll_rate, fb_df=fb_roll_rate, cmd_data_label='cmd_roll_rate', data_label='roll_rate')
 
         return prep_roll_rate_cmd, prep_roll_rate
 
@@ -339,6 +436,15 @@ class PX4Tuner:
             return prep_pitch_rate_cmd, prep_pitch_rate
         
         # TODO implement data pre-processing
+        # setup the time index list
+        #command
+        cmd_idx=pd.to_timedelta(self._cmd_att_rate_dict['time'], unit='us') # 'us' = micro seconds
+        cmd_pitch_rate = pd.DataFrame(self._cmd_att_rate_dict['y'], index=cmd_idx, columns =['cmd_pitch_rate'])
+        # feedback
+        fb_idx=pd.to_timedelta(self._att_rate_dict['time'], unit='us') # 'us' = micro seconds
+        fb_pitch_rate = pd.DataFrame(self._att_rate_dict['y'], index=fb_idx, columns =['pitch_rate'])
+
+        prep_pitch_rate_cmd, prep_pitch_rate=self.prepData(cmd_df=cmd_pitch_rate, fb_df=fb_pitch_rate, cmd_data_label='cmd_pitch_rate', data_label='pitch_rate')
 
         return prep_pitch_rate_cmd, prep_pitch_rate
 
@@ -379,7 +485,7 @@ def main():
     rospy.init_node("px4_tuner_node", anonymous=True)
     rospy.loginfo("Starting px4_tuner_node...\n")
     obj = PX4Tuner()
-    obj._record_data=True
+    # obj._record_data=True
     obj._debug=True
 
     rospy.spin()
