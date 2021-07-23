@@ -1,14 +1,13 @@
 #!/usr/bin/env python
 
-from scripts.mavros_offboard_controller import PositionController
-from time import sleep
+from time import sleep, time
 import rospy
 from mavros_msgs.msg import AttitudeTarget, ActuatorControl, PositionTarget
 from mavros_msgs.srv import MessageInterval, MessageIntervalRequest, MessageIntervalResponse
 from rospy.core import rospydebug
 from sensor_msgs.msg import Imu
-from geometry_msgs.msg import PoseStamped, TwistStamped, Point
-from std_srvs.srv import Empty
+from geometry_msgs.msg import PoseStamped, TwistStamped, Point, Vector3
+from std_srvs.srv import Empty, Trigger, TriggerRequest
 from math import ceil
 from octune.optimization import BackProbOptimizer
 import pandas as pd
@@ -40,10 +39,16 @@ class PX4Tuner:
         self._pos_dict=                 {'time':[], 'x':[], 'y':[], 'z':[]}
 
         # System excitation time, seconds
-        self._excitation_t = rospy.get_param('~excitation_t', 5.0)
+        self._excitation_t = rospy.get_param('~excitation_t', 0.5)
 
         # Sampling/upsampling time, seconds
-        self._sampling_dt = rospy.get_param('~sampling_dt', 0.01)
+        self._sampling_dt = rospy.get_param('~sampling_dt', 0.001)
+
+        # Tuning altitude
+        self._tuning_alt=rospy.get_param('~tuning_alt', 5.0)
+
+        # Current drone local position
+        self._current_drone_pos=Point()
 
         # Maximum array length, maybe dependent on excitiation time and sampling time?
         self._max_arr_L=int(ceil(self._excitation_t/self._sampling_dt))
@@ -53,9 +58,15 @@ class PX4Tuner:
 
         # Setpoint msg
         self._setpoint_msg=Point()
+        # Velocity setpoint msg, only XY, the Z component is altitude
+        self._vel_sp_msg=Vector3()
 
         # Setpoint publisher
         self._setpoint_pub = rospy.Publisher('offboard_controller/setpoint/local_pos', Point, queue_size=10)
+
+        # Velocity setpoint publisher
+        self._vel_sp_pub = rospy.Publisher('offboard_controller/setpoint/body_xy_vel', Vector3, queue_size=10)
+        self._local_vel_sp_pub = rospy.Publisher('offboard_controller/setpoint/local_xy_vel', Vector3, queue_size=10)
 
         # Commanded attitude and attitude rates
         rospy.Subscriber("mavros/setpoint_raw/target_attitude",AttitudeTarget, self.cmdAttCb)
@@ -81,6 +92,129 @@ class PX4Tuner:
         if not ret:
             rospy.logerr("Could not request higher stream rate. Shutting down px4_tuner_node ...")
             exit()
+
+     # ---------------------------- Callbacks ----------------------------#
+
+    def cmdAttCb(self, msg):
+        """Callback of commanded attitude, and attitude rates
+        """
+        if msg is None:
+            return
+
+        t = rospy.Time(secs=msg.header.stamp.secs, nsecs=msg.header.stamp.nsecs)
+        t_micro = t.to_nsec()/1000
+
+        # Commanded attitude
+        q = (
+            msg.orientation.x,
+            msg.orientation.y,
+            msg.orientation.z,
+            msg.orientation.w)
+        euler = tf.transformations.euler_from_quaternion(q, 'rzyx') #yaw/pitch/roll
+        roll_x=euler[2]
+        pitch_y=euler[1]
+        yaw_z=euler[0]
+
+        if self._record_data:
+            self._cmd_att_dict = self.insertData(dict=self._cmd_att_dict, t=t_micro, x=roll_x, y=pitch_y, z=yaw_z)
+            if self._debug:
+                rospy.loginfo_throttle(1, "_cmd_att_dict length is: %s",len(self._cmd_att_dict['time']))
+
+        # Commanded angular rates
+        x = msg.body_rate.x # commanded roll rate
+        y = msg.body_rate.y # commanded pitch rate
+        z = msg.body_rate.z # commanded yaw rate
+
+        if self._record_data:
+            self._cmd_att_rate_dict = self.insertData(dict=self._cmd_att_rate_dict, t=t_micro, x=x, y=y, z=z)
+            if self._debug:
+                rospy.loginfo_throttle(1, "cmd_att_rate_dict length is: %s",len(self._cmd_att_rate_dict['time']))
+
+
+    def cmdRatesCb(self, msg):
+        """Not needed ?
+        """
+        if msg is None:
+            return
+
+        
+
+    def cmdPosCb(self, msg):
+        """Commanded position callback
+        """
+        if msg is None:
+            return
+        # TODO
+
+    def rawImuCb(self, msg):
+        """Raw IMU values (feedback); gyros, accelerometers"""
+        if msg is None:
+            return
+        t = rospy.Time(secs=msg.header.stamp.secs, nsecs=msg.header.stamp.nsecs)
+        t_micro = t.to_nsec()/1000
+        x=msg.angular_velocity.x
+        y=msg.angular_velocity.y
+        z=msg.angular_velocity.z
+
+        if self._record_data:
+            self._att_rate_dict = self.insertData(dict=self._att_rate_dict, t=t_micro, x=x, y=y, z=z)
+            if self._debug:
+                rospy.loginfo_throttle(1, "att_rate_dict length is: %s",len(self._att_rate_dict['time']))
+
+    def imuCb(self, msg):
+        """Processed IMU (feedback); attitude """
+        if msg is None:
+            return
+        # TODO
+        t = rospy.Time(secs=msg.header.stamp.secs, nsecs=msg.header.stamp.nsecs)
+        t_micro = t.to_nsec()/1000
+
+        # Construct a quaternion tuple
+        q = (
+            msg.orientation.x,
+            msg.orientation.y,
+            msg.orientation.z,
+            msg.orientation.w)
+        euler = tf.transformations.euler_from_quaternion(q, 'rzyx') #yaw/pitch/roll
+        roll_x=euler[2]
+        pitch_y=euler[1]
+        yaw_z=euler[0]
+
+        if self._record_data:
+            self._att_dict = self.insertData(dict=self._att_dict, t=t_micro, x=roll_x, y=pitch_y, z=yaw_z)
+            if self._debug:
+                rospy.loginfo_throttle(1, "att_dict length is: %s",len(self._att_dict['time']))
+    
+    def poseCb(self, msg):
+        """Pose (feedback) callback
+        """
+        if msg is None:
+            return
+        self._current_drone_pos.x = msg.pose.position.x
+        self._current_drone_pos.y = msg.pose.position.y
+        self._current_drone_pos.z = msg.pose.position.z
+
+    def velCb(self, msg):
+        """Velocity (feedback) callback
+        """
+        if msg is None:
+            return
+        # TODO
+
+    # ------------------------------------- Functions -------------------------------------#
+    def resetDict(self):
+        """Clears all data dictionaries
+        """
+        self._cmd_att_rate_dict=        {'time':[], 'x':[], 'y':[], 'z':[]}
+        self._cmd_att_dict=             {'time':[], 'x':[], 'y':[], 'z':[]}
+        self._cmd_vel_dict=             {'time':[], 'x':[], 'y':[], 'z':[]}
+        self._cmd_pos_dict=             {'time':[], 'x':[], 'y':[], 'z':[]}
+        self._att_rate_dict=            {'time':[], 'x':[], 'y':[], 'z':[]}
+        self._att_dict=                 {'time':[], 'x':[], 'y':[], 'z':[]}
+        self._vel_dict=                 {'time':[], 'x':[], 'y':[], 'z':[]}
+        self._pos_dict=                 {'time':[], 'x':[], 'y':[], 'z':[]}
+
+        return
 
     def increaseStreamRates(self):
         """Requests from PX4 an increase in stream rates of commanded/feedback signals
@@ -165,20 +299,7 @@ class PX4Tuner:
         if len(out_dict['z']) > self._max_arr_L:
             out_dict['z'].pop(0)
 
-        return out_dict
-
-    def resetDict(self):
-        """Clears all data dictionaries
-        """
-        self._cmd_att_rate_dict=        {'time':[], 'x':[], 'y':[], 'z':[]}
-        self._cmd_att_dict=             {'time':[], 'x':[], 'y':[], 'z':[]}
-        self._cmd_vel_dict=             {'time':[], 'x':[], 'y':[], 'z':[]}
-        self._cmd_pos_dict=             {'time':[], 'x':[], 'y':[], 'z':[]}
-        self._att_rate_dict=            {'time':[], 'x':[], 'y':[], 'z':[]}
-        self._att_dict=                 {'time':[], 'x':[], 'y':[], 'z':[]}
-        self._vel_dict=                 {'time':[], 'x':[], 'y':[], 'z':[]}
-        self._pos_dict=                 {'time':[], 'x':[], 'y':[], 'z':[]}
-            
+        return out_dict            
             
     def prepDataSrv(self, req):
         """Data pre-processing service (for testing) 
@@ -186,18 +307,67 @@ class PX4Tuner:
         if(self._debug):
             rospy.loginfo("Stopping data recording")
         self.stopsRecordingData()
+
         if(self._debug):
             rospy.loginfo("Resetting data dictionaries")
         self.resetDict()
+
         if(self._debug):
             rospy.loginfo("Starting data recording")
         self.startRecordingData()
+
+        # Set home point (to go to after tuning)
+        try:
+            rospy.wait_for_service('offboard_controller/use_current_pos', timeout=2.0)
+            homeSrv=rospy.ServiceProxy('offboard_controller/use_current_pos', Trigger)
+            homeSrv()
+        except rospy.ServiceException, e:
+            print("service offboard_controller/use_current_pos call failed: {}. offboard_controller/use_current_pos Mode could not be set.".format(e))
+
+        # 5m/s velocity setpoint in x-axis
+        if (self._debug):
+            rospy.loginfo("Sending velocity setpoint: 5 m/s in body x-axis")
+        self._vel_sp_msg.x=-5.0 # m/s
+        self._vel_sp_msg.y=-5.0
+        self._vel_sp_msg.z = self._current_drone_pos.z #self._tuning_alt # this is altitude in meter(s)
+        self._local_vel_sp_pub.publish(self._vel_sp_msg)
+
+        # Activate offboard mode
+        try:
+            rospy.wait_for_service('offboard_controller/arm_and_offboard', timeout=2.0)
+            offbSrv = rospy.ServiceProxy('offboard_controller/arm_and_offboard', Empty)
+            offbSrv()
+        except rospy.ServiceException, e:
+            print("service offboard_controller/arm_and_offboard call failed: {}. arm_and_offboard Mode could not be set.".format(e))
+
         if(self._debug):
-            rospy.loginfo("Waiting for %s seconds", self._excitation_t)
-        rospy.sleep(rospy.Duration(secs=self._excitation_t))
+            rospy.loginfo("Waiting for %s seconds", self._excitation_t/2)
+        rospy.sleep(rospy.Duration(secs=self._excitation_t/2))
+
+        # -5m/s velocity setpoint in x-axis
+        if (self._debug):
+            rospy.loginfo("Sending velocity setpoint: -5 m/s in body x-axis")
+        self._vel_sp_msg.x=5.0 # m/s
+        self._vel_sp_msg.y=5.0
+        self._vel_sp_msg.z = self._current_drone_pos.z #self._tuning_alt # this is altitude in meter(s)
+        self._local_vel_sp_pub.publish(self._vel_sp_msg)
+
+        if(self._debug):
+            rospy.loginfo("Waiting for %s seconds", self._excitation_t/2)
+        rospy.sleep(rospy.Duration(secs=self._excitation_t/2))
+
+        # Hold position
+        try:
+            rospy.wait_for_service('offboard_controller/set_local_tracking', timeout=2.0)
+            holdSrv = rospy.ServiceProxy('offboard_controller/set_local_tracking', Trigger)
+            resp=holdSrv()
+        except rospy.ServiceException, e:
+            print("service offboard_controller/set_local_tracking call failed: {}. offboard_controller/set_local_tracking Mode could not be set.".format(e))
+
         if(self._debug):
             rospy.loginfo("Stopping data recording")
         self.stopsRecordingData()
+
         if(self._debug):
             rospy.loginfo("Processing Roll Rate data")
         roll_rate_cmd, roll_rate = self.prepRollRate()
@@ -215,119 +385,20 @@ class PX4Tuner:
             rospy.loginfo("Pitch rate data is processed")
         else:
             rospy.logwarn("Pitch rate data processing failed")
+
+        if(self._debug):
+            rospy.loginfo("Processing Roll data")
+        roll_cmd, roll = self.prepRoll()
+
+        if (roll_cmd is not None and roll is not None):
+            rospy.loginfo("Roll data is processed")
+        else:
+            rospy.logwarn("Roll data processing failed")
         
         if self._debug:
             plt.show()
 
         return []
-
-    # ---------------------------- Callbacks ----------------------------#
-
-    def cmdAttCb(self, msg):
-        """Callback of commanded attitude, and attitude rates
-        """
-        if msg is None:
-            return
-
-        t = rospy.Time(secs=msg.header.stamp.secs, nsecs=msg.header.stamp.nsecs)
-        t_micro = t.to_nsec()/1000
-
-        # Commanded attitude
-        q = (
-            msg.orientation.x,
-            msg.orientation.y,
-            msg.orientation.z,
-            msg.orientation.w)
-        euler = tf.transformations.euler_from_quaternion(q, 'rzyx') #yaw/pitch/roll
-        roll_x=euler[2]
-        pitch_y=euler[1]
-        yaw_z=euler[0]
-
-        if self._record_data:
-            self._cmd_att_dict = self.insertData(dict=self._cmd_att_dict, t=t_micro, x=roll_x, y=pitch_y, z=yaw_z)
-            if self._debug:
-                rospy.loginfo_throttle(1, "_cmd_att_dict length is: %s",len(self._cmd_att_dict['time']))
-
-        # Commanded angular rates
-        x = msg.body_rate.x # commanded roll rate
-        y = msg.body_rate.y # commanded pitch rate
-        z = msg.body_rate.z # commanded yaw rate
-
-        if self._record_data:
-            self._cmd_att_rate_dict = self.insertData(dict=self._cmd_att_rate_dict, t=t_micro, x=x, y=y, z=z)
-            if self._debug:
-                rospy.loginfo_throttle(1, "cmd_att_rate_dict length is: %s",len(self._cmd_att_rate_dict['time']))
-
-
-    def cmdRatesCb(self, msg):
-        """Not needed ?
-        """
-        if msg is None:
-            return
-
-        
-
-    def cmdPosCb(self, msg):
-        """Commanded position callback
-        """
-        if msg is None:
-            return
-        # TODO
-
-    def rawImuCb(self, msg):
-        """Raw IMU values (feedback); gyros, accelerometers"""
-        if msg is None:
-            return
-        t = rospy.Time(secs=msg.header.stamp.secs, nsecs=msg.header.stamp.nsecs)
-        t_micro = t.to_nsec()/1000
-        x=msg.angular_velocity.x
-        y=msg.angular_velocity.y
-        z=msg.angular_velocity.z
-
-        if self._record_data:
-            self._att_rate_dict = self.insertData(dict=self._att_rate_dict, t=t_micro, x=x, y=y, z=z)
-            if self._debug:
-                rospy.loginfo_throttle(1, "att_rate_dict length is: %s",len(self._att_rate_dict['time']))
-
-    def imuCb(self, msg):
-        """Processed IMU (feedback); attitude """
-        if msg is None:
-            return
-        # TODO
-        t = rospy.Time(secs=msg.header.stamp.secs, nsecs=msg.header.stamp.nsecs)
-        t_micro = t.to_nsec()/1000
-
-        # Construct a quaternion tuple
-        q = (
-            msg.pose.orientation.x,
-            msg.pose.orientation.y,
-            msg.pose.orientation.z,
-            msg.pose.orientation.w)
-        euler = tf.transformations.euler_from_quaternion(q, 'rzyx') #yaw/pitch/roll
-        roll_x=euler[2]
-        pitch_y=euler[1]
-        yaw_z=euler[0]
-
-        if self._record_data:
-            self._att_dict = self.insertData(dict=self._att_dict, t=t_micro, x=roll_x, y=pitch_y, z=yaw_z)
-            if self._debug:
-                rospy.loginfo_throttle(1, "att_dict length is: %s",len(self._att_dict['time']))
-    
-    def poseCb(self, msg):
-        """Pose (feedback) callback
-        """
-        if msg is None:
-            return
-        # TODO
-
-    def velCb(self, msg):
-        """Velocity (feedback) callback
-        """
-        if msg is None:
-            return
-        # TODO
-
-    # ------------------------------------- Functions -------------------------------------#
 
     def apllyStepInput(self):
         """Sends local velocity/position step inputs to excite the system.

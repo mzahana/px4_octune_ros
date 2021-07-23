@@ -24,15 +24,15 @@ CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  """
-from codecs import replace_errors
-from os import SEEK_CUR
+
+from pandas.core.resample import resample
 import rospy
 import numpy as np
 import tf
 
 from math import pi, sqrt, atan2
 from std_msgs.msg import Float32
-from std_srvs.srv import Empty, EmptyResponse, SetBool, SetBoolResponse
+from std_srvs.srv import Empty, EmptyResponse, SetBool, SetBoolResponse, Trigger, TriggerResponse
 from geometry_msgs.msg import Vector3, Point, PoseStamped, TwistStamped, PointStamped
 from sensor_msgs.msg import NavSatFix
 from mavros_msgs.msg import PositionTarget, State, Altitude, ExtendedState
@@ -280,6 +280,43 @@ class PositionController:
         self.ey_int_ = 0.
         self.ez_int_ = 0.
 
+    def computeXYVelSetpoint(self):
+        """
+        Computes XY velocity setpoint in body sudo-frame using a PI controller
+        """
+        # Compute commands
+        self.body_vx_cmd_ = self.kP_xy_*self.ex_ + self.kI_xy_*self.ex_int_
+        self.body_vy_cmd_ = self.kP_xy_*self.ey_ + self.kI_xy_*self.ey_int_
+        self.body_vz_cmd_ = self.kP_z_*self.ez_ + self.kI_z_*self.ez_int_
+
+        # Horizontal velocity constraints
+        vel_magnitude = sqrt(self.body_vx_cmd_**2 + self.body_vy_cmd_**2)
+        if vel_magnitude > self.vXYMAX_ : # anti-windup scaling      
+            scale = self.vXYMAX_/vel_magnitude
+            self.body_vx_cmd_ = self.body_vx_cmd_ * scale
+            self.body_vy_cmd_ = self.body_vy_cmd_ * scale
+        else:
+            if self.engaged_: # if armed & offboard
+                self.ex_int_ = self.ex_int_ + self.ex_
+                self.ey_int_ = self.ey_int_ + self.ey_
+
+        return self.body_vx_cmd_, self.body_vy_cmd_
+
+    def computeZVelSetpoint(self):
+        """
+        Computes Z velocity setpoint in body sudo-frame using a PI controller
+        """
+        # Vertical velocity constraints
+        if self.body_vz_cmd_ > self.vUpMAX_ : # anti-windup scaling      
+            self.body_vz_cmd_ = self.vUpMAX_
+        elif self.body_vz_cmd_ < -self.vDownMAX_:
+            self.body_vz_cmd_ = -self.vDownMAX_
+        else:
+            if self.engaged_: # if armed & offboard
+                self.ez_int_ = self.ez_int_ + self.ez_ # You can divide self.ex_ by the controller rate, but you can just tune self.kI_z_ for now!
+
+        return self.body_vz_cmd_
+
     def computeVelSetpoint(self):
         """
         Computes XYZ velocity setpoint in body sudo-frame using a PI controller
@@ -387,17 +424,58 @@ class Commander:
         # FCU modes
         self.fcu_mode_ = FCUModes()
 
+        #------------------------------------
+        # setpoints in local frame
+        self.local_xSp_  = 0.0
+        self.local_ySp_  = 0.0
+        self.local_zSp_  = 0.0
+
+        # Relative setpoints (i.e. with respect to body horizontal-frame)
+        self.relative_xSp_  = 0.0
+        self.relative_ySp_  = 0.0
+        self.relative_zSp_  = 0.0
+
+        # Flag to select between local vs. relative tracking
+        # set False for relative target tracking
+        self.local_tracking_ = True
+
+        self.bypass_controller_ = False
+
+        # Controller object to calculate velocity commands
+        self.controller_ = PositionController()
+
+        # Subscriber for user setpoints (local position)
+        rospy.Subscriber('offboard_controller/setpoint/local_pos', Point, self.localPosSpCallback)
+
+        # Subscriber for user setpoints (relative position)
+        #rospy.Subscriber('setpoint/relative_pos', Point, self.relativePosSpCallback)
+
+        # Publisher for velocity errors in body frame
+        self.bodyVel_err_pub_ = rospy.Publisher('offboard_controller/analysis/body_vel_err', PointStamped, queue_size=10)
+
+        # Publisher for velocity errors in local frame
+        self.localVel_err_pub_ = rospy.Publisher('offboard_controller/analysis/local_vel_err', PointStamped, queue_size=10)
+
+        # Publisher for position errors in local frame
+        self.localPos_err_pub_ = rospy.Publisher('offboard_controller/analysis/local_pos_err', PointStamped, queue_size=10)
+
+        # Publisher for position error between drone and target
+        self.relativePos_err_pub_ = rospy.Publisher('offboard_controller/analysis/relative_pos_err', PointStamped, queue_size=10)
+        #------------------------------------
+
         # setpoint publisher (velocity to Pixhawk)
         self.setpoint_pub_ = rospy.Publisher('mavros/setpoint_raw/local', PositionTarget, queue_size=10)
 
         # Subscriber for user setpoints (body velocity)
         #rospy.Subscriber('setpoint/body_vel', Vector3, self.velSpCallback)
+        rospy.Subscriber('offboard_controller/setpoint/body_xy_vel', Vector3, self.velSpCallback)
+        rospy.Subscriber('offboard_controller/setpoint/local_xy_vel', Vector3, self.localVelSpCallback)
 
         # Subscriber for user setpoints (local position)
         #rospy.Subscriber('setpoint/local_pos', Point, self.posSpCallback)
 
         # Subscriber for user setpoints (yaw in degrees)
-        rospy.Subscriber('setpoint/yaw_deg', Float32, self.yawSpCallback)
+        rospy.Subscriber('offboard_controller/setpoint/yaw_deg', Float32, self.yawSpCallback)
 
         # Subscriber to current drone's local position
         rospy.Subscriber('mavros/local_position/pose', PoseStamped, self.dronePosCallback)
@@ -432,16 +510,46 @@ class Commander:
         # Service for Hold flight mode
         rospy.Service('offboard_controller/auto_hold', Empty, self.autoHoldSrv)
 
-        # Service for holding at current position
-        # rospy.Service('hold', Empty, self.hold)
+        # Service to bypass position controller, and send velocity setpoints directly
+        # TODO Maybe not needed ; you can just use self.velSpCallback()
+        rospy.Service('offboard_controller/bypass_controller', SetBool, self.bypassCntSrv)
 
-    # def hold(self, req):
-    #     self.pos_setpoint_.x = self.drone_pos_.x
-    #     self.pos_setpoint_.y = self.drone_pos_.y
-    #     self.pos_setpoint_.z = self.drone_pos_.z
+        # sets the current drone local position as local setpoint
+        rospy.Service('offboard_controller/use_current_pos', Trigger, self.useCurrentPosSrv)
 
-    #     self.setLocalPositionMask()
-    #     return EmptyResponse()
+        # Activate local tracking
+        rospy.Service('offboard_controller/set_local_tracking', Trigger, self.setLocalTrackingSrv)
+
+
+    def setLocalTrackingSrv(self, req):
+        self.local_tracking_=True
+        self.bypass_controller_=False
+        self.controller_.resetIntegrators()
+        resp=TriggerResponse()
+        resp.success=True
+        resp.message="Local tracking is set to {}".format(self.local_tracking_)
+
+        return resp
+
+    def useCurrentPosSrv(self, req):
+        self.local_xSp_=self.drone_pos_.x
+        self.local_ySp_=self.drone_pos_.y
+        self.local_zSp_=self.drone_pos_.z
+        
+        resp=TriggerResponse()
+        resp.success=True
+        resp.message="Current local setpoint is set to current position x={}, y={}, z={}".format(self.local_xSp_, self.local_ySp_, self.local_zSp_)
+
+        return resp
+
+    def bypassCntSrv(self, req):
+        self.bypass_controller_=req.data
+
+        resp=SetBoolResponse()
+        resp.success=True
+        resp.message="bypass_controller_ = {}".format(self.bypass_controller_)
+        
+        return resp
 
     def bodyVelCallback(self, msg):
         self.body_vel_ = msg
@@ -456,6 +564,11 @@ class Commander:
 
     def autoHoldSrv(self, req):
         self.fcu_mode_.setHoldMode()
+        self.local_xSp_=self.drone_pos_.x
+        self.local_ySp_=self.drone_pos_.y
+        self.local_zSp_=self.drone_pos_.z
+        self.local_tracking_=True
+        self.bypass_controller_=False
         rospy.loginfo("[Offboard controller] Setting Auto Hold flight mode")
 
     def autoTakeoffSrv(self, req):
@@ -464,6 +577,10 @@ class Commander:
             return []
         if not self.isArmed_:
             self.fcu_mode_.setArm()
+
+        self.local_xSp_=self.drone_pos_.x
+        self.local_ySp_=self.drone_pos_.y
+        self.local_zSp_=req.altitude
         self.fcu_mode_.setAutoTakeoffMode(latitude=self.drone_global_pos_.latitude, longitude=self.drone_global_pos_.longitude, amsl_alt=self.drone_mavros_alt_.amsl + req.altitude)
         rospy.loginfo("[Offboard controller] Takeoff command is sent")
         return []
@@ -513,13 +630,32 @@ class Commander:
 
     def velSpCallback(self, msg):
         """
-        Velocity setpoint callback
+        Body velocity setpoint callback
         """
         self.vel_setpoint_.x = msg.x
         self.vel_setpoint_.y = msg.y
-        self.vel_setpoint_.z = msg.z
+        #self.vel_setpoint_.z = msg.z
+        self.local_zSp_=msg.z
 
         self.setBodyVelMask()
+        self.bypass_controller_=True
+        self.local_tracking_=False
+
+    def localVelSpCallback(self, msg):
+        """
+        Local velocity setpoint callback
+        """
+        if not self.isInAir_:
+            return
+            
+        self.vel_setpoint_.x = msg.x
+        self.vel_setpoint_.y = msg.y
+        #self.vel_setpoint_.z = msg.z
+        self.local_zSp_=msg.z
+
+        self.setLocalVelMask()
+        self.bypass_controller_=True
+        self.local_tracking_=False
     
     def posSpCallback(self, msg):
         """
@@ -586,70 +722,33 @@ class Commander:
 
         self.setpoint_pub_.publish(self.setpoint_)
 
-#####################################################################################
-"""
-Provides methods to track a point in both body and local frames.
-It uses PositionController class to compute control signals and Commander class to send them to the drone FCU
-Set self.local_tracking_ = True to track points in local frame, and False to track in body relative frame
-"""
-class Tracker:
-    def __init__(self):
-        # setpoints in local frame
-        self.local_xSp_  = 0.0
-        self.local_ySp_  = 0.0
-        self.local_zSp_  = 0.0
-
-        # Relative setpoints (i.e. with respect to body horizontal-frame)
-        self.relative_xSp_  = 0.0
-        self.relative_ySp_  = 0.0
-        self.relative_zSp_  = 0.0
-
-        # Flag to select between local vs. relative tracking
-        # set False for relative target tracking
-        self.local_tracking_ = True
-
-        # Commander object to send velocity setpoints to FCU
-        self.commander_ = Commander()
-
-        # Controller object to calculate velocity commands
-        self.controller_ = PositionController()
-
-        # Subscriber for user setpoints (local position)
-        rospy.Subscriber('offboard_controller/setpoint/local_pos', Point, self.localPosSpCallback)
-
-        # Subscriber for user setpoints (relative position)
-        #rospy.Subscriber('setpoint/relative_pos', Point, self.relativePosSpCallback)
-
-        # Publisher for velocity errors in body frame
-        self.bodyVel_err_pub_ = rospy.Publisher('offboard_controller/analysis/body_vel_err', PointStamped, queue_size=10)
-
-        # Publisher for velocity errors in local frame
-        self.localVel_err_pub_ = rospy.Publisher('offboard_controller/analysis/local_vel_err', PointStamped, queue_size=10)
-
-        # Publisher for position errors in local frame
-        self.localPos_err_pub_ = rospy.Publisher('offboard_controller/analysis/local_pos_err', PointStamped, queue_size=10)
-
-        # Publisher for position error between drone and target
-        self.relativePos_err_pub_ = rospy.Publisher('offboard_controller/analysis/relative_pos_err', PointStamped, queue_size=10)
-
+    #--------------------------------------------------
     def computeControlOutput(self):
-        if self.local_tracking_:
-            self.controller_.ex_ = self.local_xSp_ - self.commander_.drone_pos_.x
-            self.controller_.ey_ = self.local_ySp_ - self.commander_.drone_pos_.y
-            self.controller_.ez_ = self.local_zSp_ - self.commander_.drone_pos_.z
-            self.commander_.setLocalVelMask()
-        else: # relative tracking
-            self.controller_.ex_ = self.relative_xSp_
-            self.controller_.ey_ = self.relative_ySp_
-            self.controller_.ez_ = self.relative_zSp_
-            self.commander_.setBodyVelMask()
+        if not self.bypass_controller_:
+            if self.local_tracking_:
+                self.controller_.ex_ = self.local_xSp_ - self.drone_pos_.x
+                self.controller_.ey_ = self.local_ySp_ - self.drone_pos_.y
+                self.controller_.ez_ = self.local_zSp_ - self.drone_pos_.z
+                self.setLocalVelMask()
+            else: # relative tracking
+                self.controller_.ex_ = self.relative_xSp_
+                self.controller_.ey_ = self.relative_ySp_
+                self.controller_.ez_ = self.relative_zSp_
+                self.setBodyVelMask()
 
-        
+            self.controller_.engaged_= self.isOFFBOARD_ and self.isOFFBOARD_
+            
+            
+            self.vel_setpoint_.x, self.vel_setpoint_.y, self.vel_setpoint_.z = self.controller_.computeVelSetpoint()
+            #self.commander_.yawrate_setpoint_ = self.controller_.controlYaw()
+            self.yaw_setpoint_ = self.controller_.computeYawSp()
 
-        self.controller_.engaged_= self.commander_.isOFFBOARD_ and self.commander_.isOFFBOARD_
-        self.commander_.vel_setpoint_.x, self.commander_.vel_setpoint_.y, self.commander_.vel_setpoint_.z = self.controller_.computeVelSetpoint()
-        #self.commander_.yawrate_setpoint_ = self.controller_.controlYaw()
-        self.commander_.yaw_setpoint_ = self.controller_.computeYawSp()
+        else: # Don't control XY, just control the altitude (to avoid loosing altitude), and bypass xy velocities (by user)
+            self.controller_.ez_ = self.local_zSp_ - self.drone_pos_.z
+            zsp=self.controller_.computeZVelSetpoint()
+            self.vel_setpoint_.z = zsp
+
+
 
     def localPosSpCallback(self, msg):
         if not self.controller_.engaged_:
@@ -664,6 +763,9 @@ class Tracker:
         if not self.local_tracking_ or self.local_tracking_ is None:
             self.controller_.resetIntegrators()
             self.local_tracking_ = True
+
+        # Don't bypass the controller (don't accept direct velocity setpoint that are already set)
+        self.bypass_controller_=False
 
     def relativePosSpCallback(self, msg):
         self.relative_xSp_ = msg.x
@@ -684,9 +786,9 @@ class Tracker:
         # Local velocity errors
         localVelErr_msg = PointStamped()
         localVelErr_msg.header.stamp = rospy.Time.now()
-        localVelErr_msg.point.x = self.commander_.setpoint_.velocity.x - self.commander_.local_vel_.twist.linear.x
-        localVelErr_msg.point.y = self.commander_.setpoint_.velocity.y - self.commander_.local_vel_.twist.linear.y
-        localVelErr_msg.point.z = self.commander_.setpoint_.velocity.z - self.commander_.local_vel_.twist.linear.z
+        localVelErr_msg.point.x = self.setpoint_.velocity.x - self.local_vel_.twist.linear.x
+        localVelErr_msg.point.y = self.setpoint_.velocity.y - self.local_vel_.twist.linear.y
+        localVelErr_msg.point.z = self.setpoint_.velocity.z - self.local_vel_.twist.linear.z
         
         self.localVel_err_pub_.publish(localVelErr_msg)
 
@@ -697,18 +799,18 @@ class Tracker:
         # Required conversion is done below
         bodyVelErr_msg = PointStamped()
         bodyVelErr_msg.header.stamp = rospy.Time.now()
-        bodyVelErr_msg.point.x = self.commander_.setpoint_.velocity.x - (-self.commander_.body_vel_.twist.linear.y)
-        bodyVelErr_msg.point.y = self.commander_.setpoint_.velocity.y - self.commander_.body_vel_.twist.linear.x
-        bodyVelErr_msg.point.z = self.commander_.setpoint_.velocity.z - self.commander_.body_vel_.twist.linear.z
+        bodyVelErr_msg.point.x = self.setpoint_.velocity.x - (-self.body_vel_.twist.linear.y)
+        bodyVelErr_msg.point.y = self.setpoint_.velocity.y - self.body_vel_.twist.linear.x
+        bodyVelErr_msg.point.z = self.setpoint_.velocity.z - self.body_vel_.twist.linear.z
 
         self.bodyVel_err_pub_.publish(bodyVelErr_msg)
 
         # Local position errors
         localPosErr_msg = PointStamped()
         localPosErr_msg.header.stamp = rospy.Time.now()
-        localPosErr_msg.point.x = self.local_xSp_ - self.commander_.drone_pos_.x
-        localPosErr_msg.point.y = self.local_ySp_ - self.commander_.drone_pos_.y
-        localPosErr_msg.point.z = self.local_zSp_ - self.commander_.drone_pos_.z
+        localPosErr_msg.point.x = self.local_xSp_ - self.drone_pos_.x
+        localPosErr_msg.point.y = self.local_ySp_ - self.drone_pos_.y
+        localPosErr_msg.point.z = self.local_zSp_ - self.drone_pos_.z
 
         self.localPos_err_pub_.publish(localPosErr_msg)
 
@@ -721,10 +823,13 @@ class Tracker:
 
         self.relativePos_err_pub_.publish(relPosErr_msg)
 
+
+
 if __name__ == '__main__':
     rospy.init_node('Offboard_control_node', anonymous=True)
     
-    tracker = Tracker()
+    # tracker = Tracker()
+    cmd = Commander()
 
     loop = rospy.Rate(20)
 
@@ -743,8 +848,8 @@ if __name__ == '__main__':
         cmd.setBodyVelMask()
         # Then, publish command as below (publishSetpoint)
         """
-        tracker.computeControlOutput()
-        tracker.commander_.publishSetpoint()
-        tracker.publishErrorSignals()
+        cmd.computeControlOutput()
+        cmd.publishSetpoint()
+        cmd.publishErrorSignals()
         #cmd.publishSetpoint()
         loop.sleep()
