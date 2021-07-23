@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+from scripts.mavros_offboard_controller import PositionController
 from time import sleep
 import rospy
 from mavros_msgs.msg import AttitudeTarget, ActuatorControl, PositionTarget
@@ -12,6 +13,8 @@ from math import ceil
 from octune.optimization import BackProbOptimizer
 import pandas as pd
 import matplotlib.pyplot as plt
+import tf
+import numpy as np
 
 class PX4Tuner:
     def __init__(self):
@@ -54,10 +57,10 @@ class PX4Tuner:
         # Setpoint publisher
         self._setpoint_pub = rospy.Publisher('offboard_controller/setpoint/local_pos', Point, queue_size=10)
 
-        # Commanded attitude
+        # Commanded attitude and attitude rates
         rospy.Subscriber("mavros/setpoint_raw/target_attitude",AttitudeTarget, self.cmdAttCb)
         # Commanded angular rates
-        rospy.Subscriber("mavros/target_actuator_control",ActuatorControl, self.cmdRatesCb)
+        # rospy.Subscriber("mavros/target_actuator_control",ActuatorControl, self.cmdRatesCb)
         # Commanded position/velocity/acceleration
         rospy.Subscriber("mavros/setpoint_raw/target_local", PositionTarget, self.cmdPosCb)
 
@@ -221,11 +224,31 @@ class PX4Tuner:
     # ---------------------------- Callbacks ----------------------------#
 
     def cmdAttCb(self, msg):
+        """Callback of commanded attitude, and attitude rates
+        """
         if msg is None:
             return
 
         t = rospy.Time(secs=msg.header.stamp.secs, nsecs=msg.header.stamp.nsecs)
         t_micro = t.to_nsec()/1000
+
+        # Commanded attitude
+        q = (
+            msg.orientation.x,
+            msg.orientation.y,
+            msg.orientation.z,
+            msg.orientation.w)
+        euler = tf.transformations.euler_from_quaternion(q, 'rzyx') #yaw/pitch/roll
+        roll_x=euler[2]
+        pitch_y=euler[1]
+        yaw_z=euler[0]
+
+        if self._record_data:
+            self._cmd_att_dict = self.insertData(dict=self._cmd_att_dict, t=t_micro, x=roll_x, y=pitch_y, z=yaw_z)
+            if self._debug:
+                rospy.loginfo_throttle(1, "_cmd_att_dict length is: %s",len(self._cmd_att_dict['time']))
+
+        # Commanded angular rates
         x = msg.body_rate.x # commanded roll rate
         y = msg.body_rate.y # commanded pitch rate
         z = msg.body_rate.z # commanded yaw rate
@@ -237,17 +260,22 @@ class PX4Tuner:
 
 
     def cmdRatesCb(self, msg):
+        """Not needed ?
+        """
         if msg is None:
             return
 
         
 
     def cmdPosCb(self, msg):
+        """Commanded position callback
+        """
         if msg is None:
             return
         # TODO
 
     def rawImuCb(self, msg):
+        """Raw IMU values (feedback); gyros, accelerometers"""
         if msg is None:
             return
         t = rospy.Time(secs=msg.header.stamp.secs, nsecs=msg.header.stamp.nsecs)
@@ -262,16 +290,39 @@ class PX4Tuner:
                 rospy.loginfo_throttle(1, "att_rate_dict length is: %s",len(self._att_rate_dict['time']))
 
     def imuCb(self, msg):
+        """Processed IMU (feedback); attitude """
         if msg is None:
             return
         # TODO
+        t = rospy.Time(secs=msg.header.stamp.secs, nsecs=msg.header.stamp.nsecs)
+        t_micro = t.to_nsec()/1000
+
+        # Construct a quaternion tuple
+        q = (
+            msg.pose.orientation.x,
+            msg.pose.orientation.y,
+            msg.pose.orientation.z,
+            msg.pose.orientation.w)
+        euler = tf.transformations.euler_from_quaternion(q, 'rzyx') #yaw/pitch/roll
+        roll_x=euler[2]
+        pitch_y=euler[1]
+        yaw_z=euler[0]
+
+        if self._record_data:
+            self._att_dict = self.insertData(dict=self._att_dict, t=t_micro, x=roll_x, y=pitch_y, z=yaw_z)
+            if self._debug:
+                rospy.loginfo_throttle(1, "att_dict length is: %s",len(self._att_dict['time']))
     
     def poseCb(self, msg):
+        """Pose (feedback) callback
+        """
         if msg is None:
             return
         # TODO
 
     def velCb(self, msg):
+        """Velocity (feedback) callback
+        """
         if msg is None:
             return
         # TODO
@@ -279,9 +330,10 @@ class PX4Tuner:
     # ------------------------------------- Functions -------------------------------------#
 
     def apllyStepInput(self):
-        """Sends local velocity step inputs to excite the system
+        """Sends local velocity/position step inputs to excite the system.
+        Requires mavros_offboard_controller.py node
         """
-        # TODO implement step inputs; required mavros offboard controller
+        # TODO implement step inputs; requires mavros_offboard_controller.py node
 
     def startRecordingData(self):
         """Sets _record_data=True so that the callbacks starts storing data in the dictionaries
@@ -327,7 +379,7 @@ class PX4Tuner:
         @param cmd_df Pandas Dataframe of commanded data
         @param fb_df Pandas Dataframe of feedback data
 
-        Return
+        Returns
         --
         @return prep_cmd_data Prepared commanded data as a Python list
         @return prep_fb_data Prepared feedback data as a Python list
@@ -471,6 +523,72 @@ class PX4Tuner:
         # TODO implement data pre-processing
 
         return prep_yaw_rate_cmd, prep_yaw_rate
+
+    def prepRoll(self):
+        """Merges Roll  data (target and actual), resample, and align their timestamps.
+        Uses self._cmd_att_dict and self._att_dict
+
+        Returns
+        --
+        @return prep_roll_cmd Numpy array
+        @return prep_roll Numpy array
+        """
+        prep_roll_cmd=None
+        prep_roll=None
+        # Sanity check
+        if len(self._cmd_att_dict['time']) < 1:
+            rospy.logerr("[prepRoll] No commanded attitude data to process")
+            return prep_roll_cmd, prep_roll
+
+        if len(self._att_dict['time']) < 1:
+            rospy.logerr("[prepRoll] No feedback attitude data to process")
+            return prep_roll_cmd, prep_roll
+        
+        # TODO implement data pre-processing
+        # setup the time index list, and roll Dataframe
+        #command
+        cmd_idx=pd.to_timedelta(self._cmd_att_dict['time'], unit='us') # 'us' = micro seconds
+        cmd_roll = pd.DataFrame(self._cmd_att_dict['x'], index=cmd_idx, columns =['cmd_roll'])
+        # feedback
+        fb_idx=pd.to_timedelta(self._att_dict['time'], unit='us') # 'us' = micro seconds
+        fb_roll = pd.DataFrame(self._att_dict['x'], index=fb_idx, columns =['roll'])
+
+        prep_roll_cmd, prep_roll=self.prepData(cmd_df=cmd_roll, fb_df=fb_roll, cmd_data_label='cmd_roll', data_label='roll')
+
+        return prep_roll_cmd, prep_roll
+
+    def prepPitch(self):
+        """Merges Pitch  data (target and actual), resample, and align their timestamps.
+        Uses self._cmd_att_dict and self._att_dict
+
+        Returns
+        --
+        @return prep_pitch_cmd Numpy array
+        @return prep_pitch Numpy array
+        """
+        prep_pitch_cmd=None
+        prep_pitch=None
+        # Sanity check
+        if len(self._cmd_att_dict['time']) < 1:
+            rospy.logerr("[prepPitch] No commanded attitude data to process")
+            return prep_pitch_cmd, prep_pitch
+
+        if len(self._att_dict['time']) < 1:
+            rospy.logerr("[prepPitch] No feedback attitude data to process")
+            return prep_pitch_cmd, prep_pitch
+        
+        # TODO implement data pre-processing
+        # setup the time index list, and roll Dataframe
+        #command
+        cmd_idx=pd.to_timedelta(self._cmd_att_dict['time'], unit='us') # 'us' = micro seconds
+        cmd_pitch = pd.DataFrame(self._cmd_att_dict['y'], index=cmd_idx, columns =['cmd_pitch'])
+        # feedback
+        fb_idx=pd.to_timedelta(self._att_dict['time'], unit='us') # 'us' = micro seconds
+        fb_pitch = pd.DataFrame(self._att_dict['y'], index=fb_idx, columns =['pitch'])
+
+        prep_pitch_cmd, prep_pitch=self.prepData(cmd_df=cmd_pitch, fb_df=fb_pitch, cmd_data_label='cmd_pitch', data_label='pitch')
+
+        return prep_pitch_cmd, prep_pitch
 
     def alignData(self):
         t1=np.arange(10)+100.0
