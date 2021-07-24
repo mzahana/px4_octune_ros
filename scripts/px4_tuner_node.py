@@ -4,6 +4,7 @@ from time import time
 import rospy
 from mavros_msgs.msg import AttitudeTarget, ActuatorControl, PositionTarget
 from mavros_msgs.srv import MessageInterval, MessageIntervalRequest, MessageIntervalResponse
+from mavros_msgs.srv import ParamGet, ParamGetRequest, ParamGetResponse, ParamSet, ParamSetRequest, ParamSetResponse
 from sensor_msgs.msg import Imu
 from geometry_msgs.msg import PoseStamped, TwistStamped, Point, Vector3
 from std_srvs.srv import Empty, Trigger, TriggerRequest
@@ -253,7 +254,7 @@ class PX4Tuner:
         # TODO Implement rosservice call of /mavros/set_message_interval
         try:
             rospy.wait_for_service('mavros/set_message_interval', timeout=2.0)
-        except rospy.ServiceException, e:
+        except rospy.ServiceException as e:
             rospy.logerr("Waiting for mavros/set_message_interval timedout!")
             is_req_sent=False
             return is_req_sent
@@ -268,7 +269,7 @@ class PX4Tuner:
                 msg_stream_resp = streamReqSrv(msg_stream_req)
                 is_req_sent = is_req_sent and  msg_stream_resp.success
                     
-            except rospy.ServiceException, e:
+            except rospy.ServiceException as e:
                 rospy.logerr('Failed to call mavros/set_message_interval for msg id= %s, error: %s', id,e)
                 is_req_sent = is_req_sent and False
 
@@ -311,7 +312,206 @@ class PX4Tuner:
         if len(out_dict['z']) > self._max_arr_L:
             out_dict['z'].pop(0)
 
-        return out_dict            
+        return out_dict
+
+    def getRollRatePIDGains(self):
+        """Requests from PX4 the gain values of the Roll rate PID controller
+
+        Returns
+        --
+        @return roll_rate_kp float
+        @return roll_rate_ki float
+        @return roll_rate_kd float
+        """
+        roll_rate_kp = None
+        roll_rate_ki = None
+        roll_rate_kd = None
+
+        # request params
+        # MC_ROLLRATE_P
+        try:
+            rospy.wait_for_service('mavros/param/get')
+            paramGetSrv=rospy.ServiceProxy('mavros/param/get', ParamGet)
+            resp=paramGetSrv(param_id='MC_ROLLRATE_P')
+            if resp.success:
+                roll_rate_kp=resp.value.real
+        except rospy.ServiceException as e:
+            rospy.logerr("Calling mavros/param/get failed for MC_ROLLRATE_P: %s", e)
+
+        # MC_ROLLRATE_I
+        try:
+            rospy.wait_for_service('mavros/param/get')
+            paramGetSrv=rospy.ServiceProxy('mavros/param/get', ParamGet)
+            resp=paramGetSrv(param_id='MC_ROLLRATE_I')
+            if resp.success:
+                roll_rate_ki=resp.value.real
+        except rospy.ServiceException as e:
+            rospy.logerr("Calling mavros/param/get failed for MC_ROLLRATE_I: %s", e)
+
+        # MC_ROLLRATE_D
+        try:
+            rospy.wait_for_service('mavros/param/get')
+            paramGetSrv=rospy.ServiceProxy('mavros/param/get', ParamGet)
+            resp=paramGetSrv(param_id='MC_ROLLRATE_D')
+            if resp.success:
+                roll_rate_kd=resp.value.real
+        except rospy.ServiceException as e:
+            rospy.logerr("Calling mavros/param/get failed for MC_ROLLRATE_D: %s", e)
+
+        return roll_rate_kp, roll_rate_ki, roll_rate_kd
+
+    def getPitchRatePIDGains(self):
+        """Requests from PX4 the gain values of the Pitch rate PID controller
+
+        Returns
+        --
+        @return pitch_rate_kp float
+        @return pitch_rate_ki float
+        @return pitch_rate_kd float
+        """
+        pitch_rate_kp = None
+        pitch_rate_ki = None
+        pitch_rate_kd = None
+
+        # request params
+        # MC_PITCHRATE_P
+        try:
+            rospy.wait_for_service('mavros/param/get')
+            paramGetSrv=rospy.ServiceProxy('mavros/param/get', ParamGet)
+            resp=paramGetSrv(param_id='MC_PITCHRATE_P')
+            if resp.success:
+                pitch_rate_kp=resp.value.real
+        except rospy.ServiceException as e:
+            rospy.logerr("Calling mavros/param/get failed for MC_PITCHRATE_P: %s", e)
+
+        # MC_PITCHRATE_I
+        try:
+            rospy.wait_for_service('mavros/param/get')
+            paramGetSrv=rospy.ServiceProxy('mavros/param/get', ParamGet)
+            resp=paramGetSrv(param_id='MC_PITCHRATE_I')
+            if resp.success:
+                pitch_rate_ki=resp.value.real
+        except rospy.ServiceException as e:
+            rospy.logerr("Calling mavros/param/get failed for MC_PITCHRATE_I: %s", e)
+
+        # MC_PITCHRATE_D
+        try:
+            rospy.wait_for_service('mavros/param/get')
+            paramGetSrv=rospy.ServiceProxy('mavros/param/get', ParamGet)
+            resp=paramGetSrv(param_id='MC_PITCHRATE_D')
+            if resp.success:
+                pitch_rate_kd=resp.value.real
+        except rospy.ServiceException as e:
+            rospy.logerr("Calling mavros/param/get failed for MC_PITCHRATE_D: %s", e)
+
+        return pitch_rate_kp, pitch_rate_ki, pitch_rate_kd
+
+    def getYawRatePIDGains(self):
+        """Requests from PX4 the gain values of the Yaw rate PID controller
+
+        Returns
+        --
+        @return yaw_rate_kp float
+        @return yaw_rate_ki float
+        @return yaw_rate_kd float
+        """
+        yaw_rate_kp = None
+        yaw_rate_ki = None
+        yaw_rate_kd = None
+
+        # request params
+        # MC_YAWRATE_P
+        try:
+            rospy.wait_for_service('mavros/param/get')
+            paramGetSrv=rospy.ServiceProxy('mavros/param/get', ParamGet)
+            resp=paramGetSrv(param_id='MC_YAWRATE_P')
+            if resp.success:
+                yaw_rate_kp=resp.value.real
+        except rospy.ServiceException as e:
+            rospy.logerr("Calling mavros/param/get failed for MC_YAWRATE_P: %s", e)
+
+        # MC_YAWRATE_i
+        try:
+            rospy.wait_for_service('mavros/param/get')
+            paramGetSrv=rospy.ServiceProxy('mavros/param/get', ParamGet)
+            resp=paramGetSrv(param_id='MC_YAWRATE_I')
+            if resp.success:
+                yaw_rate_ki=resp.value.real
+        except rospy.ServiceException as e:
+            rospy.logerr("Calling mavros/param/get failed for MC_YAWRATE_I: %s", e)
+
+        # MC_YAWRATE_D
+        try:
+            rospy.wait_for_service('mavros/param/get')
+            paramGetSrv=rospy.ServiceProxy('mavros/param/get', ParamGet)
+            resp=paramGetSrv(param_id='MC_YAWRATE_D')
+            if resp.success:
+                yaw_rate_kd=resp.value.real
+        except rospy.ServiceException as e:
+            rospy.logerr("Calling mavros/param/get failed for MC_YAWRATE_D: %s", e)
+
+        return yaw_rate_kp, yaw_rate_ki, yaw_rate_kd
+
+    def getRatePIDGains(self, axis='roll'):
+        """Requests from PX4 the gain values of the axis rate PID controller
+
+        Parameters
+        --
+        @param axis Case sensitve 'ROLL', or 'PITCH', or 'YAW'
+        Returns
+        --
+        @return axis_rate_kp float
+        @return axis_rate_ki float
+        @return axis_rate_kd float
+        """
+        axis_rate_kp = None
+        axis_rate_ki = None
+        axis_rate_kd = None
+
+        if axis=='ROLL' or axis=='PITCH' or axis=='YAW':
+            param_str_p='MC_'+axis+'RATE_P'
+            param_str_i='MC_'+axis+'RATE_I'
+            param_str_d='MC_'+axis+'RATE_D'
+        else:
+            rospy.logerr("axis value is not recognized: %s", axis)
+            return axis_rate_kp, axis_rate_ki, axis_rate_kd
+
+        # request params
+        # P gain
+        try:
+            rospy.wait_for_service('mavros/param/get')
+            paramGetSrv=rospy.ServiceProxy('mavros/param/get', ParamGet)
+            resp=paramGetSrv(param_id=param_str_p)
+            if resp.success:
+                axis_rate_kp=resp.value.real
+        except rospy.ServiceException as e:
+            rospy.logerr("Calling mavros/param/get failed for %s: %s", param_str_p, e)
+
+        # I gain
+        try:
+            rospy.wait_for_service('mavros/param/get')
+            paramGetSrv=rospy.ServiceProxy('mavros/param/get', ParamGet)
+            resp=paramGetSrv(param_id=param_str_i)
+            if resp.success:
+                axis_rate_ki=resp.value.real
+        except rospy.ServiceException as e:
+            rospy.logerr("Calling mavros/param/get failed for %s: %s",param_str_i, e)
+
+        # D gain
+        try:
+            rospy.wait_for_service('mavros/param/get')
+            paramGetSrv=rospy.ServiceProxy('mavros/param/get', ParamGet)
+            resp=paramGetSrv(param_id=param_str_d)
+            if resp.success:
+                axis_rate_kd=resp.value.real
+        except rospy.ServiceException as e:
+            rospy.logerr("Calling mavros/param/get failed for %s: %s",param_str_d, e)
+
+        if (self._debug):
+            rospy.loginfo("PID gains %s=%s, %s=%s, %s=%s", param_str_p, axis_rate_kp, param_str_i, axis_rate_ki, param_str_d, axis_rate_kd)
+
+        return axis_rate_kp, axis_rate_ki, axis_rate_kd
+
             
     def prepDataSrv(self, req):
         """Data pre-processing service (for testing) 
@@ -333,7 +533,7 @@ class PX4Tuner:
             rospy.wait_for_service('offboard_controller/use_current_pos', timeout=2.0)
             homeSrv=rospy.ServiceProxy('offboard_controller/use_current_pos', Trigger)
             homeSrv()
-        except rospy.ServiceException, e:
+        except rospy.ServiceException as e:
             print("service offboard_controller/use_current_pos call failed: {}. offboard_controller/use_current_pos Mode could not be set.".format(e))
 
         # 5m/s velocity setpoint in x-axis
@@ -349,7 +549,7 @@ class PX4Tuner:
             rospy.wait_for_service('offboard_controller/arm_and_offboard', timeout=2.0)
             offbSrv = rospy.ServiceProxy('offboard_controller/arm_and_offboard', Empty)
             offbSrv()
-        except rospy.ServiceException, e:
+        except rospy.ServiceException as e:
             print("service offboard_controller/arm_and_offboard call failed: {}. arm_and_offboard Mode could not be set.".format(e))
 
         if(self._debug):
@@ -373,7 +573,7 @@ class PX4Tuner:
             rospy.wait_for_service('offboard_controller/set_local_tracking', timeout=2.0)
             holdSrv = rospy.ServiceProxy('offboard_controller/set_local_tracking', Trigger)
             resp=holdSrv()
-        except rospy.ServiceException, e:
+        except rospy.ServiceException as e:
             print("service offboard_controller/set_local_tracking call failed: {}. offboard_controller/set_local_tracking Mode could not be set.".format(e))
 
         if(self._debug):
@@ -415,6 +615,10 @@ class PX4Tuner:
             rospy.loginfo("Angular rates PID output data is processed")
         else:
             rospy.logwarn("Angular rates PID output data is None")
+
+        if (self._debug):
+            rospy.loginfo("Requesting PID values for ROLL")
+        rr_p, rr_i, rr_d = self.getRatePIDGains(axis='ROLL')
 
         
         if self._debug:
