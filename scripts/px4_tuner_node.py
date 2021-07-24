@@ -1,10 +1,9 @@
 #!/usr/bin/env python
 
-from time import sleep, time
+from time import time
 import rospy
 from mavros_msgs.msg import AttitudeTarget, ActuatorControl, PositionTarget
 from mavros_msgs.srv import MessageInterval, MessageIntervalRequest, MessageIntervalResponse
-from rospy.core import rospydebug
 from sensor_msgs.msg import Imu
 from geometry_msgs.msg import PoseStamped, TwistStamped, Point, Vector3
 from std_srvs.srv import Empty, Trigger, TriggerRequest
@@ -20,22 +19,24 @@ class PX4Tuner:
         # Print debug messages
         self._debug = rospy.get_param('~debug', False)
 
-        # Commanded attitude rates, dictionary, has two arrays, timesatmp and commanded attitude rates
+        # Angular rate controller output (actuator_controls msg in PX4); PID output
+        self._ang_rate_cnt_output_dict= {'time':[], 'x':[], 'y':[], 'z':[]}
+        # Commanded attitude rates, dictionary, has four arrays, timesatmp and commanded attitude rates
         self._cmd_att_rate_dict=        {'time':[], 'x':[], 'y':[], 'z':[]}
-        # Commanded attitude rates, dictionary, has two arrays, timesatmp and commanded attitude
+        # Commanded attitude rates, dictionary, has four arrays, timesatmp and commanded attitude
         self._cmd_att_dict=             {'time':[], 'x':[], 'y':[], 'z':[]}
-        # Commanded velocity, dictionary, has two arrays, timesatmp and commanded velocity
+        # Commanded velocity, dictionary, has four arrays, timesatmp and commanded velocity
         self._cmd_vel_dict=             {'time':[], 'x':[], 'y':[], 'z':[]}
-        # Commanded position, dictionary, has two arrays, timesatmp and commanded position
+        # Commanded position, dictionary, has four arrays, timesatmp and commanded position
         self._cmd_pos_dict=             {'time':[], 'x':[], 'y':[], 'z':[]}
 
-        # Feedback, attitude rates, dictionary, two arrays, time & data
-        self._att_rate_dict=           {'time':[], 'x':[], 'y':[], 'z':[]}
-        # Feedback, attitude,  dictionary, two arrays, time & data
+        # Feedback, attitude rates, dictionary, four arrays, time & data
+        self._att_rate_dict=            {'time':[], 'x':[], 'y':[], 'z':[]}
+        # Feedback, attitude,  dictionary, four arrays, time & data
         self._att_dict=                 {'time':[], 'x':[], 'y':[], 'z':[]}
-        # Feedback, local velocity,  dictionary, two arrays, time & data
+        # Feedback, local velocity,  dictionary, four arrays, time & data
         self._vel_dict=                 {'time':[], 'x':[], 'y':[], 'z':[]}
-        # Feedback, local position,  dictionary, two arrays, time & data
+        # Feedback, local position,  dictionary, four arrays, time & data
         self._pos_dict=                 {'time':[], 'x':[], 'y':[], 'z':[]}
 
         # System excitation time, seconds
@@ -71,7 +72,7 @@ class PX4Tuner:
         # Commanded attitude and attitude rates
         rospy.Subscriber("mavros/setpoint_raw/target_attitude",AttitudeTarget, self.cmdAttCb)
         # Commanded angular rates
-        # rospy.Subscriber("mavros/target_actuator_control",ActuatorControl, self.cmdRatesCb)
+        rospy.Subscriber("mavros/target_actuator_control",ActuatorControl, self.ratesPIDOutputCb)
         # Commanded position/velocity/acceleration
         rospy.Subscriber("mavros/setpoint_raw/target_local", PositionTarget, self.cmdPosCb)
 
@@ -131,13 +132,23 @@ class PX4Tuner:
                 rospy.loginfo_throttle(1, "cmd_att_rate_dict length is: %s",len(self._cmd_att_rate_dict['time']))
 
 
-    def cmdRatesCb(self, msg):
-        """Not needed ?
+    def ratesPIDOutputCb(self, msg):
+        """Angular rates PID output
         """
         if msg is None:
             return
 
-        
+        t = rospy.Time(secs=msg.header.stamp.secs, nsecs=msg.header.stamp.nsecs)
+        t_micro = t.to_nsec()/1000
+
+        x=msg.controls[0] # roll index
+        y=msg.controls[1] # pitch index
+        z=msg.controls[2] # yaw index
+
+        if self._record_data:
+            self._ang_rate_cnt_output_dict = self.insertData(dict=self._ang_rate_cnt_output_dict, t=t_micro, x=x, y=y, z=z)
+            if self._debug:
+                rospy.loginfo_throttle(1, "_ang_rate_cnt_output_dict length is: %s",len(self._ang_rate_cnt_output_dict['time']))
 
     def cmdPosCb(self, msg):
         """Commanded position callback
@@ -205,6 +216,7 @@ class PX4Tuner:
     def resetDict(self):
         """Clears all data dictionaries
         """
+        self._ang_rate_cnt_output_dict= {'time':[], 'x':[], 'y':[], 'z':[]}
         self._cmd_att_rate_dict=        {'time':[], 'x':[], 'y':[], 'z':[]}
         self._cmd_att_dict=             {'time':[], 'x':[], 'y':[], 'z':[]}
         self._cmd_vel_dict=             {'time':[], 'x':[], 'y':[], 'z':[]}
@@ -394,6 +406,16 @@ class PX4Tuner:
             rospy.loginfo("Roll data is processed")
         else:
             rospy.logwarn("Roll data processing failed")
+
+        if (self._debug):
+            rospy.loginfo("Angular rates PID output data")
+        pid_roll, pid_pitch, pid_yaw=self.prepRatesPIDOutput()
+
+        if (pid_roll is not None):
+            rospy.loginfo("Angular rates PID output data is processed")
+        else:
+            rospy.logwarn("Angular rates PID output data is None")
+
         
         if self._debug:
             plt.show()
@@ -503,6 +525,45 @@ class PX4Tuner:
 
         return prep_cmd_data, prep_data
 
+
+    def prepRatesPIDOutput(self):
+        prep_rate_cmd=None
+        prep_pid_roll=None
+        prep_pid_pitch=None
+        prep_pid_yaw=None
+
+        # Sanity check
+        if len(self._cmd_att_rate_dict['time']) < 1:
+            rospy.logerr("[prepRatesPIDOutput] No commanded attitude rate data to process")
+            return prep_pid_roll, prep_pid_pitch, prep_pid_yaw
+
+        if len(self._ang_rate_cnt_output_dict['time']) < 1:
+            rospy.logerr("[prepRatesPIDOutput] No actuator (PID output) data to process")
+            return prep_pid_roll, prep_pid_pitch, prep_pid_yaw
+
+        #roll
+        cmd_idx=pd.to_timedelta(self._cmd_att_rate_dict['time'], unit='us') # 'us' = micro seconds
+        cmd_roll_rate = pd.DataFrame(self._cmd_att_rate_dict['x'], index=cmd_idx, columns =['cmd_roll_rate'])
+        pid_roll_idx=pd.to_timedelta(self._ang_rate_cnt_output_dict['time'], unit='us') # 'us' = micro seconds
+        pid_roll = pd.DataFrame(self._ang_rate_cnt_output_dict['x'], index=pid_roll_idx, columns =['pid_roll'])
+        prep_roll_rate_cmd, prep_pid_roll=self.prepData(cmd_df=cmd_roll_rate, fb_df=pid_roll, cmd_data_label='cmd_roll_rate', data_label='pid_roll')
+
+        #pitch
+        cmd_idx=pd.to_timedelta(self._cmd_att_rate_dict['time'], unit='us') # 'us' = micro seconds
+        cmd_pitch_rate = pd.DataFrame(self._cmd_att_rate_dict['y'], index=cmd_idx, columns =['cmd_pitch_rate'])
+        pid_pitch_idx=pd.to_timedelta(self._ang_rate_cnt_output_dict['time'], unit='us') # 'us' = micro seconds
+        pid_pitch = pd.DataFrame(self._ang_rate_cnt_output_dict['y'], index=pid_pitch_idx, columns =['pid_pitch'])
+        prep_pitch_rate_cmd, prep_pid_pitch=self.prepData(cmd_df=cmd_pitch_rate, fb_df=pid_pitch, cmd_data_label='cmd_pitch_rate', data_label='pid_pitch')
+
+        #yaw
+        cmd_idx=pd.to_timedelta(self._cmd_att_rate_dict['time'], unit='us') # 'us' = micro seconds
+        cmd_yaw_rate = pd.DataFrame(self._cmd_att_rate_dict['z'], index=cmd_idx, columns =['cmd_yaw_rate'])
+        pid_yaw_idx=pd.to_timedelta(self._ang_rate_cnt_output_dict['time'], unit='us') # 'us' = micro seconds
+        pid_yaw = pd.DataFrame(self._ang_rate_cnt_output_dict['y'], index=pid_yaw_idx, columns =['pid_yaw'])
+        prep_yaw_rate_cmd, prep_pid_yaw=self.prepData(cmd_df=cmd_yaw_rate, fb_df=pid_yaw, cmd_data_label='cmd_yaw_rate', data_label='pid_yaw')
+
+        return prep_pid_roll, prep_pid_pitch, prep_pid_yaw
+        
 
     def prepRollRate(self):
         """Merges roll rate data (target and actual), resample, and align their timestamps.
