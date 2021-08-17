@@ -11,6 +11,7 @@ from geometry_msgs.msg import PoseStamped, TwistStamped, Point, Vector3
 from std_srvs.srv import Empty, Trigger, TriggerRequest
 from math import ceil
 from octune.optimization import BackProbOptimizer
+from px4_octune_ros.srv import MaxVel, MaxVelRequest
 import pandas as pd
 import matplotlib.pyplot as plt
 import tf
@@ -66,6 +67,8 @@ class PX4Tuner:
 
         # Optimization object
         self._optimizer=BackProbOptimizer()
+        self._optimizer._debug=False
+        self._optimizer._alpha=0.001
         # Max optimization iterations
         self._opt_max_iter=rospy.get_param('~opt_max_iter', 200)
         # Max optimization time (seconds)
@@ -146,8 +149,8 @@ class PX4Tuner:
 
         if self._record_data:
             self._cmd_att_dict = self.insertData(dict=self._cmd_att_dict, t=t_micro, x=roll_x, y=pitch_y, z=yaw_z)
-            if self._debug:
-                rospy.loginfo_throttle(1, "_cmd_att_dict length is: %s",len(self._cmd_att_dict['time']))
+            # if self._debug:
+            #     rospy.loginfo_throttle(1, "_cmd_att_dict length is: %s",len(self._cmd_att_dict['time']))
 
         # Commanded angular rates
         x = msg.body_rate.x # commanded roll rate
@@ -156,8 +159,8 @@ class PX4Tuner:
 
         if self._record_data:
             self._cmd_att_rate_dict = self.insertData(dict=self._cmd_att_rate_dict, t=t_micro, x=x, y=y, z=z)
-            if self._debug:
-                rospy.loginfo_throttle(1, "cmd_att_rate_dict length is: %s",len(self._cmd_att_rate_dict['time']))
+            # if self._debug:
+            #     rospy.loginfo_throttle(1, "cmd_att_rate_dict length is: %s",len(self._cmd_att_rate_dict['time']))
 
 
     def ratesPIDOutputCb(self, msg):
@@ -175,8 +178,8 @@ class PX4Tuner:
 
         if self._record_data:
             self._ang_rate_cnt_output_dict = self.insertData(dict=self._ang_rate_cnt_output_dict, t=t_micro, x=x, y=y, z=z)
-            if self._debug:
-                rospy.loginfo_throttle(1, "_ang_rate_cnt_output_dict length is: %s",len(self._ang_rate_cnt_output_dict['time']))
+            # if self._debug:
+            #     rospy.loginfo_throttle(1, "_ang_rate_cnt_output_dict length is: %s",len(self._ang_rate_cnt_output_dict['time']))
 
     def cmdPosCb(self, msg):
         """Commanded position callback
@@ -197,8 +200,8 @@ class PX4Tuner:
 
         if self._record_data:
             self._att_rate_dict = self.insertData(dict=self._att_rate_dict, t=t_micro, x=x, y=y, z=z)
-            if self._debug:
-                rospy.loginfo_throttle(1, "att_rate_dict length is: %s",len(self._att_rate_dict['time']))
+            # if self._debug:
+            #     rospy.loginfo_throttle(1, "att_rate_dict length is: %s",len(self._att_rate_dict['time']))
 
     def imuCb(self, msg):
         """Processed IMU (feedback); attitude """
@@ -221,8 +224,8 @@ class PX4Tuner:
 
         if self._record_data:
             self._att_dict = self.insertData(dict=self._att_dict, t=t_micro, x=roll_x, y=pitch_y, z=yaw_z)
-            if self._debug:
-                rospy.loginfo_throttle(1, "att_dict length is: %s",len(self._att_dict['time']))
+            # if self._debug:
+            #     rospy.loginfo_throttle(1, "att_dict length is: %s",len(self._att_dict['time']))
     
     def poseCb(self, msg):
         """Pose (feedback) callback
@@ -555,7 +558,7 @@ class PX4Tuner:
 
         # velocity setpoint in x-axis
         if (self._debug):
-            rospy.loginfo("Sending velocity setpoint: %s m/s in local xy-axis", step)
+            rospy.loginfo("Sending velocity setpoint: %s m/s in local xy plane", step)
         self._vel_sp_msg.x=step # m/s
         self._vel_sp_msg.y=step
         self._vel_sp_msg.z = self._current_drone_pos.z #self._tuning_alt # this is altitude in meter(s)
@@ -573,9 +576,9 @@ class PX4Tuner:
             rospy.loginfo("Waiting for %s seconds", duration/2)
         rospy.sleep(rospy.Duration(secs=duration/2))
 
-        #  velocity setpoint in x-axis
+        #  xy velocity setpoint
         if (self._debug):
-            rospy.loginfo("Sending velocity setpoint: -5 m/s in body x-axis")
+            rospy.loginfo("Sending velocity setpoint: %s m/s in local xy plane", step)
         self._vel_sp_msg.x=-1.0*step # m/s
         self._vel_sp_msg.y=-1.0*step
         self._vel_sp_msg.z = self._current_drone_pos.z #self._tuning_alt # this is altitude in meter(s)
@@ -619,6 +622,24 @@ class PX4Tuner:
         """Tunes the angular rates PID loops
         """
         # TODO should make sure that drone is in the air before starting the tuning process
+
+        # Set max velocities
+        try:
+            rospy.wait_for_service('offboard_controller/max_vel')
+            velSrv=rospy.ServiceProxy('offboard_controller/max_vel', MaxVel)
+            req=MaxVelRequest()
+            req.up_vel=3.0
+            req.down_vel=2.0
+            req.xy_vel=5.0
+            resp=velSrv(req)
+            if not resp.success:
+                rospy.logerr("Could not set max velocities. Exitign tuning process")
+                return
+            else:
+                rospy.loginfo("Calling offboard_controller/max_vel succeeded")
+        except rospy.ServiceException as e:
+            rospy.logerr("Failed to call board_controller/max_vel: %s", e)
+            return
         
         # Initial data
         # Get current PID gains
@@ -641,7 +662,7 @@ class PX4Tuner:
         self.resetDict()
         self.startRecordingData()
         good = self.apllyStepInput(step=0.5, duration=1.0)
-        while(not self.gotEnoughRollData(t=1.0)):
+        while(not self.gotEnoughRateData(t=1.0)):
             pass
         self.stopsRecordingData()
         if (not good):
@@ -664,6 +685,7 @@ class PX4Tuner:
         ki_list.append(ki)
         kd_list=[]
         kd_list.append(kd)
+        #------------------ Main tuning loop ---------------------#
         while (iter < self._opt_max_iter and (time.time() - start_time) < self._opt_max_time):
             self._is_tuning_running=True
 
@@ -703,13 +725,13 @@ class PX4Tuner:
                 self.resetDict()
                 self.startRecordingData()
                 good = self.apllyStepInput(step=0.5, duration=1.0)
-                while(not self.gotEnoughRollData(t=1.0)):
-                    pass
-                self.stopsRecordingData()
                 if (not good):
                     rospy.logerr("[tuneRatePID] Error in applying step input.Exiting tuning process.")
                     self._is_tuning_running=False
                     break
+                while(not self.gotEnoughRateData(t=1.0)):
+                    pass
+                self.stopsRecordingData()
                 # get initial signals
                 cmd_roll_rate, roll_rate, pid_roll=self.prepRollRate()
                 
@@ -779,6 +801,9 @@ class PX4Tuner:
             rospy.logerr("Control data label is None")
             return prep_cmd_data,prep_data,prep_cnt_data
 
+        if self._debug:
+            rospy.loginfo("[prepData] Length of %s=%s, length of %s=%s, length of %s=%s", cmd_data_label,len(cmd_df),data_label, len(fb_df), cnt_label,len(cnt_df))
+
         # Merge
         df_merged =cmd_df.merge(fb_df, how='outer', left_index=True, right_index=True)
         df_merged = df_merged.merge(cnt_df, how='outer', left_index=True, right_index=True)
@@ -805,7 +830,7 @@ class PX4Tuner:
 
         if (self._debug):
             rospy.loginfo("Total time for processed data = %s seocond(s)\n", (max_idx-min_idx).total_seconds())
-            df_common.plot()
+            # df_common.plot()
             #plt.show()
 
         # Finally extract processed data as lists
@@ -863,7 +888,7 @@ class PX4Tuner:
         
 
     def prepRollRate(self):
-        """Merges roll rate data (target and actual), resample, and align their timestamps.
+        """Merges roll rate data (target and actual) and the corresponding controller output signal, resample, and align their timestamps.
         Uses self._cmd_att_rate_dict and self._att_rate_dict
 
         Returns
