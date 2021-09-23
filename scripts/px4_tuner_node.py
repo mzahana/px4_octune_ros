@@ -690,18 +690,20 @@ class PX4Tuner:
         while (iter < self._opt_max_iter and (time.time() - start_time) < self._opt_max_time):
             self._is_tuning_running=True
 
-            # Exit of stop is requested
+            # Exit if a Stop is requested
             if (self._stop_tuning):
                 self._stop_tuning=False
                 self._is_tuning_running=False
                 break
+            # Execute an optimization iteration
             good =self._optimizer.update(iter=iter)
             if(good):
                 performance.append(self._optimizer.getObjective())
 
-                # get new conrtroller coeffs
+                # Get new conrtroller coeffs
                 den,num=self._optimizer.getNewContCoeff()
-                kp,ki,kd=self.getPIDGainsFromCoeff(num=num, dt=1.0)
+                kp,ki,kd=self.getPIDGainsFromCoeff(num=num, dt=1.0) # Always keep dt=1.0 !!
+                # TODO Is the following limiting method safe?
                 kp,ki,kd=self.limitPIDGains(P=kp, I=ki, D=kd, kp_min=0.05, kp_max=0.5, ki_min=0.01, ki_max=0.4, kd_min=0.001, kd_max=0.005)
                 if kp is None:
                     rospy.logerr("PID coeffs is None. Exiting tuning process")
@@ -721,6 +723,8 @@ class PX4Tuner:
                     rospy.logerr("Could not set PID values. Exiting tuning process")
                     self._is_tuning_running=False
                     break
+
+                # TODO Check if new gains are OK!
                 
                 # Apply step input and get new signals
                 self.resetDict()
@@ -733,13 +737,15 @@ class PX4Tuner:
                 while(not self.gotEnoughRateData(t=1.0)):
                     pass
                 self.stopsRecordingData()
-                # get initial signals
+                # Get initial signals
                 cmd_roll_rate, roll_rate, pid_roll=self.prepRollRate()
                 
 
                 # Update optimizer
+                # r=reference signal, u=pid output, y=output(feedback)
                 self._optimizer.setSignals(r=np.array(cmd_roll_rate),u=np.array(pid_roll),y=np.array(roll_rate))
                 num=self.getPIDCoeffFromGains(kp=kp, ki=ki, kd=kd, dt=1.0)
+                # The denominator coefficients of a discrete PID transfer function is always = [1, -1, 0]
                 self._optimizer.setContCoeffs(den_coeff=[1,-1,0], num_coeff=num)
             else:
                 rospy.logerr("\n [tuneRatePID] Could not perform update step\n")
