@@ -66,6 +66,7 @@ class PX4Tuner:
         self._vel_sp_msg=Vector3()
 
         # Optimization object
+        # TODO Instantiate optimizer object for each controller (e.g. pich/roll rate, pitch/roll angles, xyz velocities, xyz positions)
         self._optimizer=BackProbOptimizer()
         self._optimizer._debug=False
         self._optimizer._alpha=0.001
@@ -503,7 +504,7 @@ class PX4Tuner:
 
         if (self._debug):
             rospy.loginfo("Applying step input")
-        self.apllyVelStepInput(step=2.0, duration=1.0)
+        self.applyVelStepInput(step=2.0, duration=1.0)
 
         if(self._debug):
             rospy.loginfo("Stopping data recording")
@@ -542,7 +543,18 @@ class PX4Tuner:
 
         return []
 
-    def apllyVelStepInput(self, step=2.0, duration=1.0):
+    def applyPositionStepInput(self):
+        """
+        Sends local position step inputs to excite the system.
+        Requires
+
+        Returns
+        --
+        @return Bool False if there is any error
+        """
+        pass
+
+    def applyVelStepInput(self, step=2.0, duration=1.0):
         """Sends local velocity step inputs to excite the system.
         Requires mavros_offboard_controller.py node
 
@@ -645,7 +657,6 @@ class PX4Tuner:
         # Initial data
         # Get current PID gains
         kp,ki,kd=self.getRatePIDGains(axis='ROLL')
-        num=self.getPIDCoeffFromGains(kp=kp, ki=ki, kd=kd, dt=1.0)
         if kp is None:
             rospy.logerr("[tuneRatePID] Could not get ROLLRATE PID gains. Exiting tuning process")
             return
@@ -659,27 +670,38 @@ class PX4Tuner:
             rospy.logerr("service offboard_controller/use_current_pos call failed: %s. offboard_controller/use_current_pos Mode could not be set.", e)
             return 
 
-        # aplly step input
+        # aplly step input & record data
         self.resetDict()
         self.startRecordingData()
-        good = self.apllyVelStepInput(step=0.5, duration=1.0)
+        good = self.applyVelStepInput(step=0.5, duration=1.0)
+        if (not good):
+            rospy.logerr("[tuneRatePID] Error in applying step input.Exiting tuning process.")
+            self._is_tuning_running=False
+            self.stopsRecordingData()
+            return
+
+        # Wait for some time for enough data to be collected    
         while(not self.gotEnoughRateData(t=1.0)):
             pass
         self.stopsRecordingData()
-        if (not good):
-            rospy.logerr("[tuneRatePID] Error in applying step input.Exiting tuning process.")
-            return
-        # get initial signals
+
+        # Get initial signals
         cmd_roll_rate, roll_rate, pid_roll=self.prepRollRate()
         if cmd_roll_rate is None:
             rospy.logerr("Data has NaN value(s). Exiting tuning process")
+            self._is_tuning_running=False
             return
 
+        # Pass signals to the optimizer
         self._optimizer.setSignals(r=np.array(cmd_roll_rate),u=np.array(pid_roll),y=np.array(roll_rate))
+        # Construct the PID numerator coefficients of the PID discrete transfer function
+        num=self.getPIDCoeffFromGains(kp=kp, ki=ki, kd=kd, dt=1.0)
         self._optimizer.setContCoeffs(den_coeff=[1,-1,0], num_coeff=num)
         iter=1
         start_time = time.time()
-        performance=[] # to store objective value over iterations
+
+        # The following lists are for plotting
+        performance=[] # to store optimization objective values
         kp_list=[]
         kp_list.append(kp)
         ki_list=[]
@@ -717,7 +739,7 @@ class PX4Tuner:
                 ki_list.append(ki)
                 kd_list.append(kd)
 
-                # update PX4 controller
+                # Update PX4 controller
                 good=self.setRatePIDGains(axis='ROLL', kP=kp, kD=kd, kI=ki)
                 if (not good):
                     rospy.logerr("Could not set PID values. Exiting tuning process")
@@ -729,7 +751,8 @@ class PX4Tuner:
                 # Apply step input and get new signals
                 self.resetDict()
                 self.startRecordingData()
-                good = self.apllyVelStepInput(step=0.5, duration=1.0)
+                # TODO Consider sending  position setpoints using mavros setpoint plugin
+                good = self.applyVelStepInput(step=0.5, duration=1.0)
                 if (not good):
                     rospy.logerr("[tuneRatePID] Error in applying step input.Exiting tuning process.")
                     self._is_tuning_running=False
@@ -737,8 +760,9 @@ class PX4Tuner:
                 while(not self.gotEnoughRateData(t=1.0)):
                     pass
                 self.stopsRecordingData()
-                # Get initial signals
+                # Get signals
                 cmd_roll_rate, roll_rate, pid_roll=self.prepRollRate()
+                # TODO get pitch rate data 
                 
 
                 # Update optimizer
@@ -747,21 +771,14 @@ class PX4Tuner:
                 num=self.getPIDCoeffFromGains(kp=kp, ki=ki, kd=kd, dt=1.0)
                 # The denominator coefficients of a discrete PID transfer function is always = [1, -1, 0]
                 self._optimizer.setContCoeffs(den_coeff=[1,-1,0], num_coeff=num)
+
+                # Update iteration number
+                iter +=1
             else:
                 rospy.logerr("\n [tuneRatePID] Could not perform update step\n")
                 self._is_tuning_running=False
                 break
-            iter +=1
 
-        # TODO 
-        # reset data dictionaries
-        # get current PID gains
-        # apply step inputs
-        # record data
-        # optimize
-        # Check new PID gains
-        # if gains are in acceptable range, send new gains to FCU
-        # repeat until performance is acceptable (what is the metric?)
         return
 
     def tuneVelPIDs(self):
