@@ -487,7 +487,7 @@ class PX4Tuner:
         return True
             
     def prepDataSrv(self, req):
-        """Data pre-processing service (for testing) 
+        """Data pre-processing service (**THIS IS JUST FOR TESTING**) 
         """
         if(self._debug):
             rospy.loginfo("Stopping data recording")
@@ -503,7 +503,7 @@ class PX4Tuner:
 
         if (self._debug):
             rospy.loginfo("Applying step input")
-        self.apllyStepInput(step=2.0, duration=1.0)
+        self.apllyVelStepInput(step=2.0, duration=1.0)
 
         if(self._debug):
             rospy.loginfo("Stopping data recording")
@@ -542,8 +542,8 @@ class PX4Tuner:
 
         return []
 
-    def apllyStepInput(self, step=2.0, duration=1.0):
-        """Sends local velocity/position step inputs to excite the system.
+    def apllyVelStepInput(self, step=2.0, duration=1.0):
+        """Sends local velocity step inputs to excite the system.
         Requires mavros_offboard_controller.py node
 
         Parameters
@@ -610,6 +610,7 @@ class PX4Tuner:
         self._record_data=False
 
     def gotEnoughRateData(self, t=1.0):
+        # 50 is the expected number of samples/sec
         cmd_att_rate = len(self._cmd_att_rate_dict['time']) > int(ceil(t*50))
         att_rate = len(self._att_rate_dict['time']) > int(ceil(t*50))
         att_cnt = len(self._ang_rate_cnt_output_dict['time']) > int(ceil(t*50))
@@ -661,7 +662,7 @@ class PX4Tuner:
         # aplly step input
         self.resetDict()
         self.startRecordingData()
-        good = self.apllyStepInput(step=0.5, duration=1.0)
+        good = self.apllyVelStepInput(step=0.5, duration=1.0)
         while(not self.gotEnoughRateData(t=1.0)):
             pass
         self.stopsRecordingData()
@@ -724,7 +725,7 @@ class PX4Tuner:
                 # Apply step input and get new signals
                 self.resetDict()
                 self.startRecordingData()
-                good = self.apllyStepInput(step=0.5, duration=1.0)
+                good = self.apllyVelStepInput(step=0.5, duration=1.0)
                 if (not good):
                     rospy.logerr("[tuneRatePID] Error in applying step input.Exiting tuning process.")
                     self._is_tuning_running=False
