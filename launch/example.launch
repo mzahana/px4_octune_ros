@@ -1,5 +1,7 @@
 <launch>
 
+    <arg name="run_offb_controller" default="false"/>
+
     <!-- 
         PX4 SITL + Gazebo + MAVROS
     -->
@@ -9,7 +11,7 @@
     <!--
         MAVROS offboard position controller
     -->
-    <include file="$(find px4_octune_ros)/launch/offboard_controller.launch" >
+    <include if="$(arg run_offb_controller)" file="$(find px4_octune_ros)/launch/offboard_controller.launch" >
     </include>
 
     <!--
