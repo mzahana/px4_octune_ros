@@ -2,9 +2,10 @@
 
 import time
 import rospy
-from mavros_msgs.msg import AttitudeTarget, ActuatorControl, PositionTarget
+from mavros_msgs.msg import AttitudeTarget, ActuatorControl, PositionTarget, State, ExtendedState
 from mavros_msgs.srv import MessageInterval, MessageIntervalRequest, MessageIntervalResponse
 from mavros_msgs.srv import ParamGet, ParamGetRequest, ParamGetResponse, ParamSet, ParamSetRequest, ParamSetResponse
+from mavros_msgs.srv import CommandBool, SetMode
 from rospy.core import logerr
 from sensor_msgs.msg import Imu
 from geometry_msgs.msg import PoseStamped, TwistStamped, Point, Vector3
@@ -17,10 +18,111 @@ import matplotlib.pyplot as plt
 import tf
 import numpy as np
 
+class FCUModes:
+    def __init__(self):
+	    pass    
+
+    def setArm(self):
+        try:
+            rospy.wait_for_service('mavros/cmd/arming', timeout=2.0)
+            armService = rospy.ServiceProxy('mavros/cmd/arming', CommandBool)
+            armService(True)
+        except rospy.ServiceException as e:
+            print("Service arming call failed: {}".format(e))
+            return False
+
+        return True
+
+    def setDisarm(self):
+        try:
+            rospy.wait_for_service('mavros/cmd/arming', timeout=2.0)
+            armService = rospy.ServiceProxy('mavros/cmd/arming', CommandBool)
+            armService(False)
+        except rospy.ServiceException as e:
+            print("Service disarming call failed: {}".format(e))
+            return False
+
+        return True
+
+    def setStabilizedMode(self):
+        try:
+            rospy.wait_for_service('mavros/set_mode',timeout=2.0)
+            flightModeService = rospy.ServiceProxy('mavros/set_mode', SetMode)
+            flightModeService(custom_mode='STABILIZED')
+        except rospy.ServiceException as e:
+            print("service set_mode call failed: {}. Stabilized Mode could not be set.".format(e))
+            return False
+
+        return True
+
+    def setOffboardMode(self):
+        try:
+            rospy.wait_for_service('mavros/set_mode', timeout=2.0)
+            flightModeService = rospy.ServiceProxy('mavros/set_mode', SetMode)
+            flightModeService(custom_mode='OFFBOARD')
+        except rospy.ServiceException as e:
+            print("service set_mode call failed: {}. Offboard Mode could not be set.".format(e))
+            return False
+
+        return True
+
+    def setAltitudeMode(self):
+        try:
+            rospy.wait_for_service('mavros/set_mode', timeout=2.0)
+            flightModeService = rospy.ServiceProxy('mavros/set_mode', SetMode)
+            flightModeService(custom_mode='ALTCTL')
+        except rospy.ServiceException as e:
+            print("service set_mode call failed: %s. Altitude Mode could not be set.".formaat(e))
+            return False
+
+        return True
+
+    def setPositionMode(self):
+        try:
+            rospy.wait_for_service('mavros/set_mode', timeout=2.0)
+            flightModeService = rospy.ServiceProxy('mavros/set_mode', SetMode)
+            flightModeService(custom_mode='POSCTL')
+        except rospy.ServiceException as e:
+            print("service set_mode call failed: {}. Position Mode could not be set.".format(e))
+            return False
+
+        return True
+
+    def setHoldMode(self):
+        try:
+            rospy.wait_for_service('mavros/set_mode', timeout=2.0)
+            flightModeService = rospy.ServiceProxy('mavros/set_mode', SetMode)
+            flightModeService(custom_mode='AUTO.LOITER')
+        except rospy.ServiceException as e:
+            print("service set_mode call failed: {}. Auto Hold Mode could not be set.".format(e))
+            return False
+
+        return True
+
+    def setAutoLandMode(self):
+        try:
+            rospy.wait_for_service('mavros/set_mode', timeout=2.0)
+            flightModeService = rospy.ServiceProxy('mavros/set_mode', SetMode)
+            flightModeService(custom_mode='AUTO.LAND')
+        except rospy.ServiceException as e:
+            print("service set_mode call failed: {}. Autoland Mode could not be set.".format(e))
+            return False
+
+        return True
+
 class PX4Tuner:
     def __init__(self):
         # Print debug messages
         self._debug = rospy.get_param('~debug', False)
+
+        self._fcu_modes = FCUModes()
+
+        # Armed state
+        self. _isArmed = False
+        # OFFBOARD
+        self._isOffboard = False
+        # Landed state
+        self._isInAir = False
 
         # Angular rate controller output (actuator_controls msg in PX4); PID output
         self._ang_rate_cnt_output_dict= {'time':[], 'x':[], 'y':[], 'z':[]}
@@ -80,13 +182,16 @@ class PX4Tuner:
         self._is_tuning_running=False
 
 
-        # Setpoint publisher
+        # ----------------------------------- Publishers -------------------------- #
+        # Setpoint publisher (mavros_offboard_controller.py)
         self._setpoint_pub = rospy.Publisher('offboard_controller/setpoint/local_pos', Point, queue_size=10)
-
         # Velocity setpoint publisher
         self._vel_sp_pub = rospy.Publisher('offboard_controller/setpoint/body_xy_vel', Vector3, queue_size=10)
         self._local_vel_sp_pub = rospy.Publisher('offboard_controller/setpoint/local_xy_vel', Vector3, queue_size=10)
+        # Local position setpoint (mavros)
+        self._pos_sp_pub = rospy.Publisher('mavros/setpoint_position/local', PoseStamped, queue_size=10)
 
+        # ----------------------------------- Subscribers -------------------------- #
         # Commanded attitude and attitude rates
         rospy.Subscriber("mavros/setpoint_raw/target_attitude",AttitudeTarget, self.cmdAttCb)
         # Commanded angular rates
@@ -102,7 +207,12 @@ class PX4Tuner:
         rospy.Subscriber("mavros/local_position/pose", PoseStamped, self.poseCb)
         # Feedback, local velocity
         rospy.Subscriber("mavros/local_position/velocity_local", TwistStamped, self.velCb)
+        # Mavros state (to get current flight mode and armed state)
+        rospy.Subscriber("mavros/state", State, self.mavrosStateCb)
+        # Mavros extended state (to check if drone is in air or landed)
+        rospy.Subscriber("mavros/extended_state", ExtendedState, self.mavrosExtStatecb)
 
+        # ----------------------------------- Services -------------------------- #
         # Service for testing data pre-process
         rospy.Service('px4_octune/process_data', Empty, self.prepDataSrv)
         # Service for testing data pre-process
@@ -116,7 +226,20 @@ class PX4Tuner:
             rospy.logerr("Could not request higher stream rate. Shutting down px4_tuner_node ...")
             exit()
 
-     # ---------------------------- Callbacks ----------------------------#
+    # ---------------------------- Callbacks ----------------------------#
+
+    def mavrosExtStatecb(self, msg):
+        if msg.landed_state == ExtendedState.LANDED_STATE_IN_AIR:
+            self._isInAir = True
+        else:
+            self._isInAir = False
+    
+    def mavrosStateCb(self, msg):
+        self._isArmed = msg.armed
+        if msg.mode == 'OFFBOARD':
+            self._isOffboard=True
+        else:
+            self._isOffboard=False
 
     def startTuningSrv(self, req):
         self.tuneRatePID()
@@ -543,16 +666,87 @@ class PX4Tuner:
 
         return []
 
-    def applyPositionStepInput(self):
+    def applyPositionStepInput(self, t=1.0, step_xy=1.0, step_z=0.0):
         """
         Sends local position step inputs to excite the system.
         Requires
+
+        Parameters:
+        --
+        @param t setpoint publishing total time in seconds
+        @param step_xy Position increment to the current XY local position, meters
+        @param step_z Position increment to the current Z local position, meters
 
         Returns
         --
         @return Bool False if there is any error
         """
-        pass
+
+        # Sanity checks
+        if (not self._isArmed):
+            rospy.logerr("[PX4_OCTUNE::applyPositionStepInput] Drone is not armed. Skipping position step input")
+            return False
+
+        if (not self._isInAir):
+            rospy.logerr("[PX4_OCTUNE::applyPositionStepInput] Drone is not in the air. Skipping position step input")
+            return False
+
+        # while loop to send position setpoints in offboard mode for t seconds
+        # After t seconds set Hold flight mode
+        
+        # Save the current drone position
+        starting_pos = self._current_drone_pos
+
+
+        # Setpoint msg
+        sp_msg = PoseStamped()
+
+        rate = rospy.Rate(50)
+
+        if not self._isOffboard:
+            rospy.loginfo("Setting Offboard mode")
+            # Need to publish some setpoints before activating OFFBOARD mode
+            k=0
+            sp_msg.pose.position = starting_pos
+            while k < 10:
+                k += 1
+                sp_msg.header.stamp = rospy.Time.now()
+                self._pos_sp_pub.publish(sp_msg)
+                rate.sleep()
+
+            # set OFFBOARD mode
+            ret = self._fcu_modes.setOffboardMode()
+            if not ret:
+                rospy.logerr("[PX4_OCTUNE::applyPositionStepInput] Could not set offboard mode. Skipping position step input ")
+                return False
+                
+        sp_msg.pose.position.x = starting_pos.x + step_xy
+        sp_msg.pose.position.y = starting_pos.y + step_xy
+        sp_msg.pose.position.z = starting_pos.z + step_z
+        # Start time, sec
+        start_t = time.time()
+        while ( (time.time() - start_t) < t ):
+            sp_msg.header.stamp = rospy.Time.now()
+            self._pos_sp_pub.publish(sp_msg)
+            rate.sleep()
+
+        # Send drone back to initial position
+        # TODO Not an accurate way!!!!
+        sp_msg.pose.position = starting_pos
+        k=0
+        while k < 10:
+            k += 1
+            sp_msg.header.stamp = rospy.Time.now()
+            self._pos_sp_pub.publish(sp_msg)
+            rate.sleep()
+
+        # Set Hold position mode
+        if (not self._fcu_modes.setHoldMode() ):
+            rospy.logerr("[PX4_OCTUNE::applyPositionStepInput] Could not set Hold mode. Skipping position step input ")
+            return False
+
+        return True
+
 
     def applyVelStepInput(self, step=2.0, duration=1.0):
         """Sends local velocity step inputs to excite the system.
@@ -637,45 +831,49 @@ class PX4Tuner:
         # TODO should make sure that drone is in the air before starting the tuning process
 
         # Set max velocities
-        try:
-            rospy.wait_for_service('offboard_controller/max_vel')
-            velSrv=rospy.ServiceProxy('offboard_controller/max_vel', MaxVel)
-            req=MaxVelRequest()
-            req.up_vel=3.0
-            req.down_vel=2.0
-            req.xy_vel=5.0
-            resp=velSrv(req)
-            if not resp.success:
-                rospy.logerr("Could not set max velocities. Exitign tuning process")
-                return
-            else:
-                rospy.loginfo("Calling offboard_controller/max_vel succeeded")
-        except rospy.ServiceException as e:
-            rospy.logerr("Failed to call board_controller/max_vel: %s", e)
-            return
+        # try:
+        #     rospy.wait_for_service('offboard_controller/max_vel')
+        #     velSrv=rospy.ServiceProxy('offboard_controller/max_vel', MaxVel)
+        #     req=MaxVelRequest()
+        #     req.up_vel=3.0
+        #     req.down_vel=2.0
+        #     req.xy_vel=5.0
+        #     resp=velSrv(req)
+        #     if not resp.success:
+        #         rospy.logerr("Could not set max velocities. Exitign tuning process")
+        #         return
+        #     else:
+        #         rospy.loginfo("Calling offboard_controller/max_vel succeeded")
+        # except rospy.ServiceException as e:
+        #     rospy.logerr("Failed to call board_controller/max_vel: %s", e)
+        #     return
         
         # Initial data
         # Get current PID gains
         kp,ki,kd=self.getRatePIDGains(axis='ROLL')
+        start_kp = kp
+        start_ki = ki
+        start_kd = kd
         if kp is None:
             rospy.logerr("[tuneRatePID] Could not get ROLLRATE PID gains. Exiting tuning process")
             return
 
-        # Set current local position as a position setpoint to go to after tuning
-        try:
-            rospy.wait_for_service('offboard_controller/use_current_pos', timeout=2.0)
-            homeSrv=rospy.ServiceProxy('offboard_controller/use_current_pos', Trigger)
-            homeSrv()
-        except rospy.ServiceException as e:
-            rospy.logerr("service offboard_controller/use_current_pos call failed: %s. offboard_controller/use_current_pos Mode could not be set.", e)
-            return 
+        # # Set current local position as a position setpoint to go to after tuning
+        # try:
+        #     rospy.wait_for_service('offboard_controller/use_current_pos', timeout=2.0)
+        #     homeSrv=rospy.ServiceProxy('offboard_controller/use_current_pos', Trigger)
+        #     homeSrv()
+        # except rospy.ServiceException as e:
+        #     rospy.logerr("service offboard_controller/use_current_pos call failed: %s. offboard_controller/use_current_pos Mode could not be set.", e)
+        #     return 
 
         # aplly step input & record data
         self.resetDict()
         self.startRecordingData()
-        good = self.applyVelStepInput(step=0.5, duration=1.0)
+        # good = self.applyVelStepInput(step=0.5, duration=1.0)
+        good = self.applyPositionStepInput(step_xy=5.0, step_z=0.0, t=5.0)
         if (not good):
-            rospy.logerr("[tuneRatePID] Error in applying step input.Exiting tuning process.")
+            rospy.logerr("[tuneRatePID] Error in applying step input. Exiting tuning process.")
             self._is_tuning_running=False
             self.stopsRecordingData()
             return
@@ -752,7 +950,8 @@ class PX4Tuner:
                 self.resetDict()
                 self.startRecordingData()
                 # TODO Consider sending  position setpoints using mavros setpoint plugin
-                good = self.applyVelStepInput(step=0.5, duration=1.0)
+                # good = self.applyVelStepInput(step=0.5, duration=1.0)
+                good = self.applyPositionStepInput(step_xy=5.0, step_z=0.0, t=5.0)
                 if (not good):
                     rospy.logerr("[tuneRatePID] Error in applying step input.Exiting tuning process.")
                     self._is_tuning_running=False
@@ -779,6 +978,7 @@ class PX4Tuner:
                 self._is_tuning_running=False
                 break
 
+        rospy.loginfo("Done with atitude rate tuning")
         return
 
     def tuneVelPIDs(self):
