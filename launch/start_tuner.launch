@@ -1,3 +1,6 @@
 <launch>
-    <node pkg="px4_octune_ros" type="px4_tuner_node.py" name="px4_tuner_node" output="screen" />
+    <arg name="debug" default="False"/>
+    <node pkg="px4_octune_ros" type="px4_tuner_node.py" name="px4_tuner_node" output="screen" >
+        <param name="debug" value="$(arg debug)"/>
+    </node>
 </launch>

@@ -18,6 +18,7 @@
         px4_octune_node
     -->
     <include file="$(find px4_octune_ros)/launch/start_tuner.launch">
+        <arg name="debug" value="True"/>
     </include>
     
 </launch>
