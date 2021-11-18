@@ -72,7 +72,7 @@ class FCUModes:
             flightModeService = rospy.ServiceProxy('mavros/set_mode', SetMode)
             flightModeService(custom_mode='ALTCTL')
         except rospy.ServiceException as e:
-            print("service set_mode call failed: %s. Altitude Mode could not be set.".formaat(e))
+            print("service set_mode call failed: %s. Altitude Mode could not be set.".format(e))
             return False
 
         return True
@@ -145,7 +145,7 @@ class PX4Tuner:
         self._pos_dict=                 {'time':[], 'x':[], 'y':[], 'z':[]}
 
         # System excitation time, seconds
-        self._excitation_t = rospy.get_param('~excitation_t', 0.5)
+        self._excitation_t = rospy.get_param('~excitation_t', 1.0)
 
         # Sampling/upsampling time, seconds
         self._sampling_dt = rospy.get_param('~sampling_dt', 0.001)
@@ -153,8 +153,8 @@ class PX4Tuner:
         # Tuning altitude
         self._tuning_alt=rospy.get_param('~tuning_alt', 5.0)
 
-        # Current drone local position
-        self._current_drone_pos=Point()
+        # Current drone local position, Point()
+        self._current_drone_pos=None
 
         # Maximum array length, maybe dependent on excitiation time and sampling time?
         self._max_arr_L=int(ceil(self._excitation_t/self._sampling_dt))
@@ -167,15 +167,25 @@ class PX4Tuner:
         # Velocity setpoint msg, only XY, the Z component is altitude
         self._vel_sp_msg=Vector3()
 
+        # Amplitude of setpoint sin wave, meter[s]
+        self._sp_sin_amplitude = 1.0
+        # Frequency of the sin wave, Hz
+        self._sp_sin_freq = 0.25
+        # True: send position (sin wave) setpoints to PX4
+        self._send_sin_sp = False
+        self._sp_sin_start_time = time.time()
+        # Tuning starting position
+        self._tuning_starting_pos = Point()
+
         # Optimization object
         # TODO Instantiate optimizer object for each controller (e.g. pich/roll rate, pitch/roll angles, xyz velocities, xyz positions)
         self._optimizer=BackProbOptimizer()
         self._optimizer._debug=False
-        self._optimizer._alpha=0.001
+        self._optimizer._alpha=0.002
         # Max optimization iterations
-        self._opt_max_iter=rospy.get_param('~opt_max_iter', 200)
+        self._opt_max_iter=rospy.get_param('~opt_max_iter', 300)
         # Max optimization time (seconds)
-        self._opt_max_time=rospy.get_param('~opt_max_time', 30.0)
+        self._opt_max_time=rospy.get_param('~opt_max_time', 60.0)
 
         # Flag to stop tuning process
         self._stop_tuning=False
@@ -211,6 +221,12 @@ class PX4Tuner:
         rospy.Subscriber("mavros/state", State, self.mavrosStateCb)
         # Mavros extended state (to check if drone is in air or landed)
         rospy.Subscriber("mavros/extended_state", ExtendedState, self.mavrosExtStatecb)
+
+        # ----------------------------------- Timers -------------------------- #
+    
+        # Timer for setpoint calback
+        # Can be shutdown by: self._setpoint_timer.shutdown()
+        self._setpoint_timer = rospy.Timer(rospy.Duration(0.1), self.applySinPositionSetpoint)
 
         # ----------------------------------- Services -------------------------- #
         # Service for testing data pre-process
@@ -248,6 +264,8 @@ class PX4Tuner:
 
     def stopTuningSrv(self, req):
         self._stop_tuning=True
+        self.stopSinPositionSetpoint()
+        self.stopRecordingData()    
 
         return []
 
@@ -356,6 +374,7 @@ class PX4Tuner:
         """
         if msg is None:
             return
+        self._current_drone_pos = Point()
         self._current_drone_pos.x = msg.pose.position.x
         self._current_drone_pos.y = msg.pose.position.y
         self._current_drone_pos.z = msg.pose.position.z
@@ -541,7 +560,7 @@ class PX4Tuner:
         @param axis Case sensitve 'ROLL', or 'PITCH', or 'YAW'
         @param kP float P gain
         @param kI float I gain
-        @param kD flat D gain
+        @param kD float D gain
 
         Returns
         --
@@ -615,7 +634,7 @@ class PX4Tuner:
         """
         if(self._debug):
             rospy.loginfo("Stopping data recording")
-        self.stopsRecordingData()
+        self.stopRecordingData()
 
         if(self._debug):
             rospy.loginfo("Resetting data dictionaries")
@@ -631,7 +650,7 @@ class PX4Tuner:
 
         if(self._debug):
             rospy.loginfo("Stopping data recording")
-        self.stopsRecordingData()
+        self.stopRecordingData()
 
         if(self._debug):
             rospy.loginfo("Processing Roll Rate data")
@@ -665,6 +684,88 @@ class PX4Tuner:
             plt.show()
 
         return []
+
+    def applySinPositionSetpoint(self, event):
+        """Sends a sin wave of position setpoints at amplitude step w.r.t starting position, and frequency freq
+
+        Uses class members
+        --
+        self._sp_sin_amplitude Amplitude of the sine wave in meters w.r.t to the starting position
+        self._sp_sin_freq Sin wave frequency in Hz
+        self._sp_sin_start_time
+
+        @return Bool False if there is any error
+        """
+        if not self._send_sin_sp:
+            return
+
+        if self._debug:
+            rospy.loginfo("[applySinPositionSetpoint] Running applySinPositionSetpoint")
+
+         # Sanity checks
+        if (not self._isArmed):
+            rospy.logerr("[PX4_OCTUNE::applyPositionStepInput] Drone is not armed. Skipping position step input")
+            return False
+
+        if (not self._isInAir):
+            rospy.logerr("[PX4_OCTUNE::applyPositionStepInput] Drone is not in the air. Skipping position step input")
+            return False
+
+        # Position setpoint ROS msg
+        sp_msg = PoseStamped()
+        sp_msg.header.stamp = rospy.Time.now()
+        t = time.time() - self._sp_sin_start_time
+        sp_msg.pose.position.x = self._tuning_starting_pos.x + self._sp_sin_amplitude * np.sin(2.0 * np.pi * self._sp_sin_freq * t)
+        sp_msg.pose.position.y = self._tuning_starting_pos.y + self._sp_sin_amplitude * np.sin(2.0 * np.pi * self._sp_sin_freq * t)
+        sp_msg.pose.position.z = self._tuning_starting_pos.z    # Keep current height for now (Assuming it's in air!)
+
+        self._pos_sp_pub.publish(sp_msg)
+
+    def startSinPositionSetpoint(self):
+        # Sanity check
+        if self._current_drone_pos is None:
+            rospy.logerr("[startSinPositionSetpoint] Can not start setpoint streaming. Current drone position is None")
+            return False
+
+        if not self._send_sin_sp:
+            self._tuning_starting_pos = self._current_drone_pos
+            self._sp_sin_start_time = time.time()
+            # Set OFFBOARD mode
+            if not self._isOffboard:
+                good = self._fcu_modes.setOffboardMode()
+                if not good:
+                    rospy.logerr("[PX4_OCTUNE::applyPositionStepInput] Could not set offboard mode. Skipping position step input ")
+                    return False
+
+            # Activate 
+            self._send_sin_sp = True
+            
+            return True
+        else:
+            rospy.logerr("[startSinpositionSetpoint] Position setpoints (sin wave) are already being sent")
+            return False
+
+    def stopSinPositionSetpoint(self):
+        if not self._send_sin_sp:
+            rospy.logwarn("[stopSinPositionSetpoint] Setpoint streaming is already stopped")
+            return
+
+        self._send_sin_sp = False
+        # Go back to the starting position
+        sp_msg = PoseStamped()
+        sp_msg.pose.position.x = self._tuning_starting_pos.x
+        sp_msg.pose.position.y = self._tuning_starting_pos.y
+        sp_msg.pose.position.z = self._tuning_starting_pos.z
+
+        # Just publish setpoint for sometime to make sure it's back home
+        # Otherwise,  it wall go out of OFFBOARD mode
+        rate = rospy.Rate(10)
+        k=0
+        while k < 20:
+            sp_msg.header.stamp = rospy.Time.now()
+            self._pos_sp_pub.publish(sp_msg)
+            rate.sleep()
+            k+=1
 
     def applyPositionStepInput(self, t=1.0, step_xy=1.0, step_z=0.0):
         """
@@ -810,7 +911,7 @@ class PX4Tuner:
         """
         self._record_data=True
 
-    def stopsRecordingData(self):
+    def stopRecordingData(self):
         """Sets _record_data=False so that the callbacks stop storing data in the dictionaries
         """
         self._record_data=False
@@ -824,168 +925,6 @@ class PX4Tuner:
             return True
         else:
             return False
-
-    def tuneRatePID(self):
-        """Tunes the angular rates PID loops
-        """
-        # TODO should make sure that drone is in the air before starting the tuning process
-
-        # Set max velocities
-        # try:
-        #     rospy.wait_for_service('offboard_controller/max_vel')
-        #     velSrv=rospy.ServiceProxy('offboard_controller/max_vel', MaxVel)
-        #     req=MaxVelRequest()
-        #     req.up_vel=3.0
-        #     req.down_vel=2.0
-        #     req.xy_vel=5.0
-        #     resp=velSrv(req)
-        #     if not resp.success:
-        #         rospy.logerr("Could not set max velocities. Exitign tuning process")
-        #         return
-        #     else:
-        #         rospy.loginfo("Calling offboard_controller/max_vel succeeded")
-        # except rospy.ServiceException as e:
-        #     rospy.logerr("Failed to call board_controller/max_vel: %s", e)
-        #     return
-        
-        # Initial data
-        # Get current PID gains
-        kp,ki,kd=self.getRatePIDGains(axis='ROLL')
-        start_kp = kp
-        start_ki = ki
-        start_kd = kd
-        if kp is None:
-            rospy.logerr("[tuneRatePID] Could not get ROLLRATE PID gains. Exiting tuning process")
-            return
-
-        # # Set current local position as a position setpoint to go to after tuning
-        # try:
-        #     rospy.wait_for_service('offboard_controller/use_current_pos', timeout=2.0)
-        #     homeSrv=rospy.ServiceProxy('offboard_controller/use_current_pos', Trigger)
-        #     homeSrv()
-        # except rospy.ServiceException as e:
-        #     rospy.logerr("service offboard_controller/use_current_pos call failed: %s. offboard_controller/use_current_pos Mode could not be set.", e)
-        #     return 
-
-        # aplly step input & record data
-        self.resetDict()
-        self.startRecordingData()
-        # good = self.applyVelStepInput(step=0.5, duration=1.0)
-        good = self.applyPositionStepInput(step_xy=5.0, step_z=0.0, t=5.0)
-        if (not good):
-            rospy.logerr("[tuneRatePID] Error in applying step input. Exiting tuning process.")
-            self._is_tuning_running=False
-            self.stopsRecordingData()
-            return
-
-        # Wait for some time for enough data to be collected    
-        while(not self.gotEnoughRateData(t=1.0)):
-            pass
-        self.stopsRecordingData()
-
-        # Get initial signals
-        cmd_roll_rate, roll_rate, pid_roll=self.prepRollRate()
-        if cmd_roll_rate is None:
-            rospy.logerr("Data has NaN value(s). Exiting tuning process")
-            self._is_tuning_running=False
-            return
-
-        # Pass signals to the optimizer
-        self._optimizer.setSignals(r=np.array(cmd_roll_rate),u=np.array(pid_roll),y=np.array(roll_rate))
-        # Construct the PID numerator coefficients of the PID discrete transfer function
-        num=self.getPIDCoeffFromGains(kp=kp, ki=ki, kd=kd, dt=1.0)
-        self._optimizer.setContCoeffs(den_coeff=[1,-1,0], num_coeff=num)
-        iter=1
-        start_time = time.time()
-
-        # The following lists are for plotting
-        performance=[] # to store optimization objective values
-        kp_list=[]
-        kp_list.append(kp)
-        ki_list=[]
-        ki_list.append(ki)
-        kd_list=[]
-        kd_list.append(kd)
-        #------------------ Main tuning loop ---------------------#
-        while (iter < self._opt_max_iter and (time.time() - start_time) < self._opt_max_time):
-            self._is_tuning_running=True
-
-            # Exit if a Stop is requested
-            if (self._stop_tuning):
-                self._stop_tuning=False
-                self._is_tuning_running=False
-                break
-            # Execute an optimization iteration
-            good =self._optimizer.update(iter=iter)
-            if(good):
-                performance.append(self._optimizer.getObjective())
-
-                # Get new conrtroller coeffs
-                den,num=self._optimizer.getNewContCoeff()
-                kp,ki,kd=self.getPIDGainsFromCoeff(num=num, dt=1.0) # Always keep dt=1.0 !!
-                # TODO Is the following limiting method safe?
-                kp,ki,kd=self.limitPIDGains(P=kp, I=ki, D=kd, kp_min=0.05, kp_max=0.5, ki_min=0.01, ki_max=0.4, kd_min=0.001, kd_max=0.005)
-                if kp is None:
-                    rospy.logerr("PID coeffs is None. Exiting tuning process")
-                    self._is_tuning_running=False
-                    break
-
-                # NOTE Just for debugging
-                rospy.loginfo("New PID gains P=%s, I=%s, D=%s", kp, ki, kd)
-
-                kp_list.append(kp)
-                ki_list.append(ki)
-                kd_list.append(kd)
-
-                # Update PX4 controller
-                good=self.setRatePIDGains(axis='ROLL', kP=kp, kD=kd, kI=ki)
-                if (not good):
-                    rospy.logerr("Could not set PID values. Exiting tuning process")
-                    self._is_tuning_running=False
-                    break
-
-                # TODO Check if new gains are OK!
-                
-                # Apply step input and get new signals
-                self.resetDict()
-                self.startRecordingData()
-                # TODO Consider sending  position setpoints using mavros setpoint plugin
-                # good = self.applyVelStepInput(step=0.5, duration=1.0)
-                good = self.applyPositionStepInput(step_xy=5.0, step_z=0.0, t=5.0)
-                if (not good):
-                    rospy.logerr("[tuneRatePID] Error in applying step input.Exiting tuning process.")
-                    self._is_tuning_running=False
-                    break
-                while(not self.gotEnoughRateData(t=1.0)):
-                    pass
-                self.stopsRecordingData()
-                # Get signals
-                cmd_roll_rate, roll_rate, pid_roll=self.prepRollRate()
-                # TODO get pitch rate data 
-                
-
-                # Update optimizer
-                # r=reference signal, u=pid output, y=output(feedback)
-                self._optimizer.setSignals(r=np.array(cmd_roll_rate),u=np.array(pid_roll),y=np.array(roll_rate))
-                num=self.getPIDCoeffFromGains(kp=kp, ki=ki, kd=kd, dt=1.0)
-                # The denominator coefficients of a discrete PID transfer function is always = [1, -1, 0]
-                self._optimizer.setContCoeffs(den_coeff=[1,-1,0], num_coeff=num)
-
-                # Update iteration number
-                iter +=1
-            else:
-                rospy.logerr("\n [tuneRatePID] Could not perform update step\n")
-                self._is_tuning_running=False
-                break
-
-        rospy.loginfo("Done with atitude rate tuning")
-        return
-
-    def tuneVelPIDs(self):
-        """Tunes linear velocity PID loops
-        """
-        # TODO 
-        pass
 
     def prepData(self, cmd_df=None, fb_df=None, cnt_df=None, cmd_data_label=None, data_label=None, cnt_label=None):
         """Merges data (target and actual), resample, and align their timestamps.
@@ -1376,6 +1315,224 @@ class PX4Tuner:
         d2=pd.to_timedelta(t2, unit='s')
         print("--------------------")
         print(type(d1))
+
+    # --------------------------------------------------------------------------- #
+    #                               Tuning methods
+    # --------------------------------------------------------------------------- #
+    def tuneRatePID(self):
+        """Tunes the angular rates PID loops
+        """
+        # TODO should make sure that drone is in the air before starting the tuning process
+
+        # Set max velocities
+        # try:
+        #     rospy.wait_for_service('offboard_controller/max_vel')
+        #     velSrv=rospy.ServiceProxy('offboard_controller/max_vel', MaxVel)
+        #     req=MaxVelRequest()
+        #     req.up_vel=3.0
+        #     req.down_vel=2.0
+        #     req.xy_vel=5.0
+        #     resp=velSrv(req)
+        #     if not resp.success:
+        #         rospy.logerr("Could not set max velocities. Exitign tuning process")
+        #         return
+        #     else:
+        #         rospy.loginfo("Calling offboard_controller/max_vel succeeded")
+        # except rospy.ServiceException as e:
+        #     rospy.logerr("Failed to call board_controller/max_vel: %s", e)
+        #     return
+        
+        # Initial data
+        # Get current PID gains
+        kp,ki,kd=self.getRatePIDGains(axis='ROLL')
+        start_kp = kp
+        start_ki = ki
+        start_kd = kd
+        if kp is None:
+            rospy.logerr("[tuneRatePID] Could not get ROLLRATE PID gains. Exiting tuning process")
+            return
+
+        # # Set current local position as a position setpoint to go to after tuning
+        # try:
+        #     rospy.wait_for_service('offboard_controller/use_current_pos', timeout=2.0)
+        #     homeSrv=rospy.ServiceProxy('offboard_controller/use_current_pos', Trigger)
+        #     homeSrv()
+        # except rospy.ServiceException as e:
+        #     rospy.logerr("service offboard_controller/use_current_pos call failed: %s. offboard_controller/use_current_pos Mode could not be set.", e)
+        #     return 
+
+        # aplly step input & record data
+        self.resetDict()
+        self.startRecordingData()
+        # good = self.applyVelStepInput(step=0.5, duration=1.0)
+        #good = self.applyPositionStepInput(step_xy=5.0, step_z=0.0, t=5.0)
+        good = self.startSinPositionSetpoint()
+        if (not good):
+            rospy.logerr("[tuneRatePID] Error in applying step input. Exiting tuning process.")
+            self._is_tuning_running=False
+            self.stopRecordingData()
+            return
+
+        # Wait for some time for enough data to be collected    
+        while(not self.gotEnoughRateData(t=1.0)):
+            pass
+        self.stopRecordingData()
+
+        # Get initial signals
+        cmd_roll_rate, roll_rate, pid_roll=self.prepRollRate()
+        init_roll_rate = roll_rate # Used for plotting. Will be compared with final_roll_rate (after tuning)
+        init_roll_cmd = cmd_roll_rate
+        if cmd_roll_rate is None:
+            rospy.logerr("Data has NaN value(s). Exiting tuning process")
+            self._is_tuning_running=False
+            return
+
+        # Pass signals to the optimizer
+        self._optimizer.setSignals(r=np.array(cmd_roll_rate),u=np.array(pid_roll),y=np.array(roll_rate))
+        # Construct the PID numerator coefficients of the PID discrete transfer function
+        num=self.getPIDCoeffFromGains(kp=kp, ki=ki, kd=kd, dt=1.0)
+        self._optimizer.setContCoeffs(den_coeff=[1,-1,0], num_coeff=num)
+        iter=1
+        start_time = time.time()
+
+        # The following lists are for plotting
+        performance=[] # to store optimization objective values
+        s_max_list = []
+        kp_list=[]
+        kp_list.append(kp)
+        ki_list=[]
+        ki_list.append(ki)
+        kd_list=[]
+        kd_list.append(kd)
+
+        #------------------ Main tuning loop ---------------------#
+        while (iter < self._opt_max_iter and (time.time() - start_time) < self._opt_max_time):
+            self._is_tuning_running=True
+
+            # Exit if a Stop is requested
+            if (self._stop_tuning):
+                self._stop_tuning=False
+                self._is_tuning_running=False
+                self.stopSinPositionSetpoint()
+                self.stopRecordingData()
+                break
+            # Execute an optimization iteration
+            good =self._optimizer.update(iter=iter)
+            if(good):
+
+                # Get new conrtroller coeffs
+                den,num=self._optimizer.getNewContCoeff()
+                kp,ki,kd=self.getPIDGainsFromCoeff(num=num, dt=1.0) # Always keep dt=1.0 !!
+                # TODO Is the following limiting method safe?
+                kp,ki,kd=self.limitPIDGains(P=kp, I=ki, D=kd, kp_min=0.05, kp_max=0.5, ki_min=0.01, ki_max=0.4, kd_min=0.001, kd_max=0.005)
+                if kp is None:
+                    rospy.logerr("PID coeffs is None. Exiting tuning process")
+                    self._is_tuning_running=False
+                    self.stopSinPositionSetpoint()
+                    self.stopRecordingData()
+                    break
+
+                # NOTE Just for debugging
+                rospy.loginfo("New PID gains P=%s, I=%s, D=%s", kp, ki, kd)
+
+                # Store for plotting
+                performance.append(self._optimizer.getObjective())
+                kp_list.append(kp)
+                ki_list.append(ki)
+                kd_list.append(kd)
+
+                # Update PX4 controller
+                good=self.setRatePIDGains(axis='ROLL', kP=kp, kD=kd, kI=ki)
+                if (not good):
+                    rospy.logerr("Could not set PID values. Exiting tuning process")
+                    self._is_tuning_running=False
+                    break
+
+                # TODO Check if new gains are OK!
+                
+                # Apply step input and get new signals
+                self.resetDict()
+                self.startRecordingData()
+                # TODO Consider sending  position setpoints using mavros setpoint plugin
+                # good = self.applyVelStepInput(step=0.5, duration=1.0)
+                #good = self.applyPositionStepInput(step_xy=5.0, step_z=0.0, t=5.0)
+                # if (not good):
+                #     rospy.logerr("[tuneRatePID] Error in applying step input.Exiting tuning process.")
+                #     self._is_tuning_running=False
+                #     break
+                while(not self.gotEnoughRateData(t=2.0)):
+                    pass
+                self.stopRecordingData()
+                # Get signals
+                cmd_roll_rate, roll_rate, pid_roll=self.prepRollRate()
+                # TODO get pitch rate data 
+                
+
+                # Update optimizer
+                # r=reference signal, u=pid output, y=output(feedback)
+                self._optimizer.setSignals(r=np.array(cmd_roll_rate),u=np.array(pid_roll),y=np.array(roll_rate))
+                num=self.getPIDCoeffFromGains(kp=kp, ki=ki, kd=kd, dt=1.0)
+                # The denominator coefficients of a discrete PID transfer function is always = [1, -1, 0]
+                self._optimizer.setContCoeffs(den_coeff=[1,-1,0], num_coeff=num)
+
+                s_max, w_max, f_max = self._optimizer.maxSensitivity(dt=self._sampling_dt)
+                s_max_list.append(s_max)
+
+                # Update iteration number
+                iter +=1
+            else:
+                rospy.logerr("\n [tuneRatePID] Could not perform update step\n")
+                self._is_tuning_running=False
+                self.stopSinPositionSetpoint()
+                self.stopRecordingData()
+                break
+
+        self.stopSinPositionSetpoint()
+        self.stopRecordingData()
+        rospy.loginfo("Done with atitude rate tuning")
+
+        # plotting
+
+        plt.plot(init_roll_cmd, 'r', label='Initial Desired reference')
+        plt.plot(init_roll_rate, 'k', label='Initial response')
+        plt.ylabel('rad/s')
+        plt.legend()
+        plt.show()
+        
+        final_roll_cmd = cmd_roll_rate
+        final_roll_rate = roll_rate
+        plt.plot(final_roll_cmd, 'k', label='Final reference')
+        plt.plot(final_roll_rate, 'g', label='Tuned response')
+        plt.ylabel('rad/s')
+        plt.legend()
+        plt.show()
+
+        plt.plot(s_max_list, label='Maximum sensitivity')
+        plt.xlabel('iteration number')
+        plt.ylabel('s_max')
+        plt.legend()
+        plt.show()
+
+        plt.plot(performance)
+        plt.xlabel('iteration number')
+        plt.ylabel('performance')
+        plt.show()
+
+        plt.plot(kp_list, label='Kp')
+        plt.plot(ki_list, label='Ki')
+        plt.plot(kd_list, label='Kd')
+        plt.xlabel('iteration number')
+        plt.ylabel('Gain value')
+        plt.legend()
+        plt.show()
+
+        return
+
+    def tuneVelPIDs(self):
+        """Tunes linear velocity PID loops
+        """
+        # TODO 
+        pass
         
         
 def main():
