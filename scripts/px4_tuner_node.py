@@ -145,10 +145,10 @@ class PX4Tuner:
         self._pos_dict=                 {'time':[], 'x':[], 'y':[], 'z':[]}
 
         # System excitation time, seconds
-        self._excitation_t = rospy.get_param('~excitation_t', 1.0)
+        self._excitation_t = rospy.get_param('~excitation_t', 2.0)
 
         # Sampling/upsampling time, seconds
-        self._sampling_dt = rospy.get_param('~sampling_dt', 0.001)
+        self._sampling_dt = rospy.get_param('~sampling_dt', 0.005)
 
         # Tuning altitude
         self._tuning_alt=rospy.get_param('~tuning_alt', 5.0)
@@ -168,9 +168,9 @@ class PX4Tuner:
         self._vel_sp_msg=Vector3()
 
         # Amplitude of setpoint sin wave, meter[s]
-        self._sp_sin_amplitude = 1.0
+        self._sp_sin_amplitude = 0.5
         # Frequency of the sin wave, Hz
-        self._sp_sin_freq = 0.25
+        self._sp_sin_freq = 1.0
         # True: send position (sin wave) setpoints to PX4
         self._send_sin_sp = False
         self._sp_sin_start_time = time.time()
@@ -182,6 +182,8 @@ class PX4Tuner:
         self._optimizer=BackProbOptimizer()
         self._optimizer._debug=False
         self._optimizer._alpha=0.002
+        self._optimizer._use_optimal_alpha = True # optimize learnign rate
+        self._optimizer._use_adam = False # Use gradient descent
         # Max optimization iterations
         self._opt_max_iter=rospy.get_param('~opt_max_iter', 300)
         # Max optimization time (seconds)
@@ -700,15 +702,15 @@ class PX4Tuner:
             return
 
         if self._debug:
-            rospy.loginfo("[applySinPositionSetpoint] Running applySinPositionSetpoint")
+            rospy.loginfo_throttle(1, "[applySinPositionSetpoint] Running applySinPositionSetpoint")
 
          # Sanity checks
         if (not self._isArmed):
-            rospy.logerr("[PX4_OCTUNE::applyPositionStepInput] Drone is not armed. Skipping position step input")
+            rospy.logerr_throttle(1, "[PX4_OCTUNE::applyPositionStepInput] Drone is not armed. Skipping position step input")
             return False
 
         if (not self._isInAir):
-            rospy.logerr("[PX4_OCTUNE::applyPositionStepInput] Drone is not in the air. Skipping position step input")
+            rospy.logerr_throttle(1, "[PX4_OCTUNE::applyPositionStepInput] Drone is not in the air. Skipping position step input")
             return False
 
         # Position setpoint ROS msg
@@ -1238,9 +1240,14 @@ class PX4Tuner:
         n1=num[1]
         n2=num[2]
 
-        kd=dt*n2
-        ki=(n0+n1+n2)/dt
-        kp=(n0+n1-n2)/2.
+        # kd=dt*n2
+        # ki=(n0+n1+n2)/dt
+        # kp=(n0+n1-n2)/2.
+
+        # Ref: last equation (13) in https://www.scilab.org/discrete-time-pid-controller-implementation
+        kp = (n0-n2)/2
+        ki = (n0+n1+n2)/(2.*dt)
+        kd = dt*(n0 - n1 + n2)/8.
 
         return kp,ki,kd
 
@@ -1272,9 +1279,15 @@ class PX4Tuner:
             return None
 
         # Numerator coeff
-        n0=kp+ki*dt/2.+kd/dt
-        n1=-kp+ki*dt/2.-2.*kd/dt
-        n2=kd/dt
+        # n0=kp+ki*dt/2.+kd/dt
+        # n1=-kp+ki*dt/2.-2.*kd/dt
+        # n2=kd/dt
+
+        # Ref: last equation (13) in https://www.scilab.org/discrete-time-pid-controller-implementation
+        n0 = (2*dt*kp + ki*dt**2 + 4*kd) /2./dt
+        n1 = (2*ki*dt**2 - 8*kd) / 2./dt
+        n2 = (ki*dt**2 - 2*dt*kp + 4*kd) /2./dt
+
         num=[n0,n1,n2]
 
         return num
@@ -1374,7 +1387,7 @@ class PX4Tuner:
             return
 
         # Wait for some time for enough data to be collected    
-        while(not self.gotEnoughRateData(t=1.0)):
+        while(not self.gotEnoughRateData(t=self._excitation_t)):
             pass
         self.stopRecordingData()
 
@@ -1390,8 +1403,9 @@ class PX4Tuner:
         # Pass signals to the optimizer
         self._optimizer.setSignals(r=np.array(cmd_roll_rate),u=np.array(pid_roll),y=np.array(roll_rate))
         # Construct the PID numerator coefficients of the PID discrete transfer function
-        num=self.getPIDCoeffFromGains(kp=kp, ki=ki, kd=kd, dt=1.0)
-        self._optimizer.setContCoeffs(den_coeff=[1,-1,0], num_coeff=num)
+        # num=self.getPIDCoeffFromGains(kp=kp, ki=ki, kd=kd, dt=1.0)
+        num=self.getPIDCoeffFromGains(kp=kp, ki=ki, kd=kd, dt=self._sampling_dt)
+        self._optimizer.setContCoeffs(den_coeff=[1,0,-1], num_coeff=num)
         iter=1
         start_time = time.time()
 
@@ -1405,6 +1419,7 @@ class PX4Tuner:
         kd_list=[]
         kd_list.append(kd)
 
+        rospy.loginfo("[tuneRatePID] Startin the tuning loop")
         #------------------ Main tuning loop ---------------------#
         while (iter < self._opt_max_iter and (time.time() - start_time) < self._opt_max_time):
             self._is_tuning_running=True
@@ -1419,10 +1434,11 @@ class PX4Tuner:
             # Execute an optimization iteration
             good =self._optimizer.update(iter=iter)
             if(good):
-
+                print("-------------- Did gradient update --------------- \n")
                 # Get new conrtroller coeffs
                 den,num=self._optimizer.getNewContCoeff()
-                kp,ki,kd=self.getPIDGainsFromCoeff(num=num, dt=1.0) # Always keep dt=1.0 !!
+                # kp,ki,kd=self.getPIDGainsFromCoeff(num=num, dt=1.0) # Always keep dt=1.0 !!
+                kp,ki,kd=self.getPIDGainsFromCoeff(num=num, dt=self._sampling_dt) 
                 # TODO Is the following limiting method safe?
                 kp,ki,kd=self.limitPIDGains(P=kp, I=ki, D=kd, kp_min=0.05, kp_max=0.5, ki_min=0.01, ki_max=0.4, kd_min=0.001, kd_max=0.005)
                 if kp is None:
@@ -1460,7 +1476,9 @@ class PX4Tuner:
                 #     rospy.logerr("[tuneRatePID] Error in applying step input.Exiting tuning process.")
                 #     self._is_tuning_running=False
                 #     break
-                while(not self.gotEnoughRateData(t=2.0)):
+                while(not self.gotEnoughRateData(t=self._excitation_t)):
+                    if(self._debug):
+                        rospy.loginfo_throttle(1, "[tuneRatePID] Waiting for enough data to be collected")
                     pass
                 self.stopRecordingData()
                 # Get signals
@@ -1471,9 +1489,10 @@ class PX4Tuner:
                 # Update optimizer
                 # r=reference signal, u=pid output, y=output(feedback)
                 self._optimizer.setSignals(r=np.array(cmd_roll_rate),u=np.array(pid_roll),y=np.array(roll_rate))
-                num=self.getPIDCoeffFromGains(kp=kp, ki=ki, kd=kd, dt=1.0)
+                # num=self.getPIDCoeffFromGains(kp=kp, ki=ki, kd=kd, dt=1.0)
+                num=self.getPIDCoeffFromGains(kp=kp, ki=ki, kd=kd, dt=self._sampling_dt)
                 # The denominator coefficients of a discrete PID transfer function is always = [1, -1, 0]
-                self._optimizer.setContCoeffs(den_coeff=[1,-1,0], num_coeff=num)
+                self._optimizer.setContCoeffs(den_coeff=[1,0,-1], num_coeff=num)
 
                 s_max, w_max, f_max = self._optimizer.maxSensitivity(dt=self._sampling_dt)
                 s_max_list.append(s_max)
@@ -1489,7 +1508,7 @@ class PX4Tuner:
 
         self.stopSinPositionSetpoint()
         self.stopRecordingData()
-        rospy.loginfo("Done with atitude rate tuning")
+        rospy.loginfo(" [tuneRatePID] Done with atitude rate tuning llop")
 
         # plotting
 
