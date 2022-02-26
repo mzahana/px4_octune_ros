@@ -19,26 +19,28 @@ else
     echo $SUDO_PASS | sudo -S apt-get update
 fi
 
-
-# We need a src folder in the HOMe folder
-if [ ! -d "$HOME/src" ]; then
-    echo "Creating $HOME/src" && echo
-    sleep 1
-    mkdir -p $HOME/src
+# If the src directory of OCTUNE pkg is not supplied as env variable,
+# use $HOME/src
+if [-z ${OCTUNE_DIR} ]; then
+    
+    if [ ! -d "$HOME/src" ]; then
+        echo "Creating $HOME/src" && echo
+        mkdir -p $HOME/src
+    fi
+    OCTUNE_DIR=$HOME/src
 fi
-cd $HOME/src
 
 # Clone OCTUNE package
-if [ ! -d "$HOME/src/octune" ]; then
-    cd $HOME/src
+if [ ! -d "$OCTUNE_DIR/octune" ]; then
+    cd $OCTUNE_DIR
     $CLONE_OCTUNE
 else
-    echo "octune package already exists in $HOME/src/octune. Pulling latest updates..." && echo
-    cd $HOME/src/octune
+    echo "octune package already exists in $OCTUNE_DIR/octune. Pulling latest updates..." && echo
+    cd $OCTUNE_DIR/octune
     git pull
 fi
 echo && echo "Checking out python2 branch..." echo
-cd $HOME/src/octune && git checkout python2
+cd $OCTUNE_DIR/octune && git checkout python2
 
 # Make sure we have python3-pip installed
 
@@ -63,6 +65,6 @@ pip install scipy --user
 pip install pandas --user
 
 # Install octune
-cd $HOME/src/octune
+cd $OCTUNE_DIR/octune
 #python3 setup.py develop --user
 python setup.py develop --user
