@@ -118,7 +118,6 @@ fi
       cd \$HOME/$SHARED_VOLUME_NAME/catkin_ws/src/px4_octune_ros && ./scripts/setup.sh
       cd \$HOME/$SHARED_VOLUME_NAME/catkin_ws && catkin build
       fi && \
-      source \$HOME/$SHARED_VOLUME_NAME/catkin_ws/devel/setup.bash && \
       source \$HOME/.bashrc && /bin/bash"
 
 echo "Running container ${CONTAINER_NAME}..."
