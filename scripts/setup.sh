@@ -13,7 +13,7 @@ else
     CLONE_OCTUNE="git clone https://${GIT_TOKEN}@github.com/mzahana/octune.git"
 fi
 
-if [-z ${SUDO_PASS} ]; then
+if [ -z ${SUDO_PASS} ]; then
     sudo apt-get update
 else
     echo $SUDO_PASS | sudo -S apt-get update
@@ -21,7 +21,7 @@ fi
 
 # If the src directory of OCTUNE pkg is not supplied as env variable,
 # use $HOME/src
-if [-z ${OCTUNE_DIR} ]; then
+if [ -z ${OCTUNE_DIR} ]; then
     
     if [ ! -d "$HOME/src" ]; then
         echo "Creating $HOME/src" && echo
@@ -53,7 +53,7 @@ cd $OCTUNE_DIR/octune && git checkout python2
 curl https://bootstrap.pypa.io/pip/2.7/get-pip.py -o get-pip.py
 python get-pip.py --force-reinstall
 
-if [-z ${SUDO_PASS} ]; then
+if [ -z ${SUDO_PASS} ]; then
     sudo pip uninstall -y numpy
 else
     echo $SUDO_PASS | sudo -S pip uninstall -y numpy

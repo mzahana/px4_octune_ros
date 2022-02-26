@@ -107,13 +107,9 @@ fi
  CMD="export GIT_TOKEN=${PERSONAL_GIT_TOKEN} && export SUDO_PASS=arrow && \
       export OCTUNE_DIR=\$HOME/$SHARED_VOLUME_NAME && \
       if [ ! -d "\$HOME/$SHARED_VOLUME_NAME/catkin_ws/" ]; then
-      mkdir \$HOME/$SHARED_VOLUME_NAME/catkin_ws/src
+      mkdir -p \$HOME/$SHARED_VOLUME_NAME/catkin_ws/src
       cd \$HOME/$SHARED_VOLUME_NAME/catkin_ws
-      catkin init
-      catkin config --cmake-args -DCMAKE_BUILD_TYPE=Release
-      catkin config --merge-devel
-      catkin config --extend /opt/ros/\$ROS_DISTRO \
-      catkin build
+      catkin init && catkin config --cmake-args -DCMAKE_BUILD_TYPE=Release && catkin config --merge-devel && catkin config --extend /opt/ros/\$ROS_DISTRO && catkin build
       fi && \
       cd \$HOME/$SHARED_VOLUME_NAME/catkin_ws/src && \
       echo '-----------------------------' && echo && \
