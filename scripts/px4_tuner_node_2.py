@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+from ctypes import util
 import time
 import rospy
 from mavros_msgs.msg import AttitudeTarget, ActuatorControl, PositionTarget, State, ExtendedState
@@ -26,46 +27,82 @@ class PX4Tuner:
         # Print debug messages
         self._debug = rospy.get_param('~debug', False)
 
-        # System excitation time, seconds
-        self._excitation_t = rospy.get_param('~excitation_t', 2.0)
+        # Desired duration of collected data samples, seconds
+        self._data_len_sec = rospy.get_param('~data_len_sec', 2.0)
 
         # Sampling/upsampling time, seconds
         self._sampling_dt = rospy.get_param('~sampling_dt', 0.005)
 
         # Maximum array length, maybe dependent on excitiation time and sampling time?
-        self._max_arr_L=int(ceil(self._excitation_t/self._sampling_dt))
+        self._max_arr_L=int(ceil(self._data_len_sec/self._sampling_dt))
 
         # Flag to record/store data
         self._record_data=False
 
-        # Optimization object
-        # TODO Instantiate optimizer object for each controller (e.g. pich/roll rate, pitch/roll angles, xyz velocities, xyz positions)
-        self._optimizer=BackProbOptimizer()
-        self._optimizer._debug=False
-        self._optimizer._alpha=0.002
-        self._optimizer._use_optimal_alpha = True # optimize learnign rate to gurantee convergence
-        self._optimizer._use_adam = False # Use gradient descent
+        # Date object
+        self._data = ProcessData()
+        self._data._sampling_dt = self._sampling_dt
+        self._data._data_len_sec = self._data_len_sec
+        self._data._raw_data_freq = 50.0
+        self._data_buffering_timeout = self._data_len_sec + 0.5
+        self._data_buffering_start_t = time.time()
+
+        # PID gains
+        self._roll_rate_pid = utils.PIDGains()
+        self._pitch_rate_pid = utils.PIDGains()
+        self._vel_xy_pid = utils.PIDGains()
+        self._vel_z_pid = utils.PIDGains()
+
+        # Optimization objects
+        self._roll_rate_optimizer=BackProbOptimizer()
+        self._roll_rate_optimizer._debug=False
+        self._roll_rate_optimizer._alpha=0.002
+        self._roll_rate_optimizer._use_optimal_alpha = True # optimize learning rate to gurantee convergence
+        self._roll_rate_optimizer._use_adam = False # Use gradient descent
+
+        self._pitch_rate_optimizer=BackProbOptimizer()
+        self._pitch_rate_optimizer._debug=False
+        self._pitch_rate_optimizer._alpha=0.002
+        self._pitch_rate_optimizer._use_optimal_alpha = True # optimize learning rate to gurantee convergence
+        self._pitch_rate_optimizer._use_adam = False # Use gradient descent
+
+        self._vel_xy_optimizer=BackProbOptimizer()
+        self._vel_xy_optimizer._debug=False
+        self._vel_xy_optimizer._alpha=0.002
+        self._vel_xy_optimizer._use_optimal_alpha = True # optimize learning rate to gurantee convergence
+        self._vel_xy_optimizer._use_adam = False # Use gradient descent
+
+        self._vel_z_optimizer=BackProbOptimizer()
+        self._vel_z_optimizer._debug=False
+        self._vel_z_optimizer._alpha=0.002
+        self._vel_z_optimizer._use_optimal_alpha = True # optimize learning rate to gurantee convergence
+        self._vel_z_optimizer._use_adam = False # Use gradient descent
+
+        # TODO need optimizers for angular and linear positions (Just P controllers )
+
         # Max optimization iterations
         self._opt_max_iter=rospy.get_param('~opt_max_iter', 300)
         # Max optimization time (seconds)
         self._opt_max_time=rospy.get_param('~opt_max_time', 60.0)
+        self._opt_max_failures = rospy.get_param("~opt_max_failures", 10)
+        self._current_opt_iteration = 0
+        self._opt_failure_counter = 0
+        self._opt_start_t = time.time()
 
         # Flag to stop tuning process
         self._start_tuning=False
-
         # Tuning indicator
         self._is_tuning_running=False
 
         # States of the tuning state machine
-        self.IDLE_STATE = True
+        self.IDLE_STATE = False
         self.GET_INIT_GAINS_STATE = False
         self.GET_DATA_STATE = False
         self.OPTIMIZATION_STATE = False
 
 
         # ----------------------------------- Publishers -------------------------- #
-        # Local position setpoint (mavros)
-        self._pos_sp_pub = rospy.Publisher('mavros/setpoint_position/local', PoseStamped, queue_size=10)
+
 
         # ----------------------------------- Subscribers -------------------------- #
         # Commanded attitude and attitude rates
@@ -83,20 +120,11 @@ class PX4Tuner:
         rospy.Subscriber("mavros/local_position/pose", PoseStamped, self.poseCb)
         # Feedback, local velocity
         rospy.Subscriber("mavros/local_position/velocity_local", TwistStamped, self.velCb)
-        # Mavros state (to get current flight mode and armed state)
-        rospy.Subscriber("mavros/state", State, self.mavrosStateCb)
-        # Mavros extended state (to check if drone is in air or landed)
-        rospy.Subscriber("mavros/extended_state", ExtendedState, self.mavrosExtStatecb)
 
         # ----------------------------------- Timers -------------------------- #
     
-        # Timer for setpoint calback
-        # Can be shutdown by: self._setpoint_timer.shutdown()
-        self._setpoint_timer = rospy.Timer(rospy.Duration(0.1), self.applySinPositionSetpoint)
 
         # ----------------------------------- Services -------------------------- #
-        # Service for testing data pre-process
-        rospy.Service('px4_octune/process_data', Empty, self.prepDataSrv)
         # Service for testing data pre-process
         rospy.Service('px4_octune/start_tune', Empty, self.startTuningSrv)
         # Service for testing data pre-process
@@ -109,34 +137,13 @@ class PX4Tuner:
             exit()
 
     # ---------------------------- Callbacks ----------------------------#
-
-    def mavrosExtStatecb(self, msg):
-        if msg.landed_state == ExtendedState.LANDED_STATE_IN_AIR:
-            self._isInAir = True
-        else:
-            self._isInAir = False
-    
-    def mavrosStateCb(self, msg):
-        self._isArmed = msg.armed
-        if msg.mode == 'OFFBOARD':
-            self._isOffboard=True
-        else:
-            self._isOffboard=False
-
     def startTuningSrv(self, req):
-        if self._is_tuning_running:
-            rospy.logwarn("Tuning is already in progress")
-        else:
-            self._start_tuning = True
-            rospy.loginfo("Tuning is started")
+        self.startTuning()
 
         return []
 
     def stopTuningSrv(self, req):
-        self._start_tuning=False
-        self.resetStates()
-        self._is_tuning_running = False
-        rospy.loginfo("Tuning is stopped")
+        self.stopTuning()
 
         return []
 
@@ -160,8 +167,7 @@ class PX4Tuner:
         pitch_y=euler[1]
         yaw_z=euler[0]
 
-        if self._record_data:
-            self._cmd_att_dict = self.insertData(dict=self._cmd_att_dict, t=t_micro, x=roll_x, y=pitch_y, z=yaw_z)
+        self._data._cmd_att_dict = self._data.insertData(dict=self._data._cmd_att_dict, t=t_micro, x=roll_x, y=pitch_y, z=yaw_z)
             # if self._debug:
             #     rospy.loginfo_throttle(1, "_cmd_att_dict length is: %s",len(self._cmd_att_dict['time']))
 
@@ -170,8 +176,8 @@ class PX4Tuner:
         y = msg.body_rate.y # commanded pitch rate
         z = msg.body_rate.z # commanded yaw rate
 
-        if self._record_data:
-            self._cmd_att_rate_dict = self.insertData(dict=self._cmd_att_rate_dict, t=t_micro, x=x, y=y, z=z)
+        
+        self._data._cmd_att_rate_dict = self._data.insertData(dict=self._data._cmd_att_rate_dict, t=t_micro, x=x, y=y, z=z)
             # if self._debug:
             #     rospy.loginfo_throttle(1, "cmd_att_rate_dict length is: %s",len(self._cmd_att_rate_dict['time']))
 
@@ -189,8 +195,7 @@ class PX4Tuner:
         y=msg.controls[1] # pitch index
         z=msg.controls[2] # yaw index
 
-        if self._record_data:
-            self._ang_rate_cnt_output_dict = self.insertData(dict=self._ang_rate_cnt_output_dict, t=t_micro, x=x, y=y, z=z)
+        self._data._ang_rate_cnt_output_dict = self._data.insertData(dict=self._data._ang_rate_cnt_output_dict, t=t_micro, x=x, y=y, z=z)
             # if self._debug:
             #     rospy.loginfo_throttle(1, "_ang_rate_cnt_output_dict length is: %s",len(self._ang_rate_cnt_output_dict['time']))
 
@@ -205,8 +210,7 @@ class PX4Tuner:
         y=msg.angular_velocity.y
         z=msg.angular_velocity.z
 
-        if self._record_data:
-            self._att_rate_dict = self.insertData(dict=self._att_rate_dict, t=t_micro, x=x, y=y, z=z)
+        self._data._att_rate_dict = self._data.insertData(dict=self._data._att_rate_dict, t=t_micro, x=x, y=y, z=z)
             # if self._debug:
             #     rospy.loginfo_throttle(1, "att_rate_dict length is: %s",len(self._att_rate_dict['time']))
 
@@ -229,8 +233,7 @@ class PX4Tuner:
         pitch_y=euler[1]
         yaw_z=euler[0]
 
-        if self._record_data:
-            self._att_dict = self.insertData(dict=self._att_dict, t=t_micro, x=roll_x, y=pitch_y, z=yaw_z)
+        self._data._att_dict = self._data.insertData(dict=self._data._att_dict, t=t_micro, x=roll_x, y=pitch_y, z=yaw_z)
             # if self._debug:
             #     rospy.loginfo_throttle(1, "att_dict length is: %s",len(self._att_dict['time']))
     
@@ -253,33 +256,26 @@ class PX4Tuner:
 
     # ------------------------------------- Functions -------------------------------------#
 
-    def resetStates(self):
-        self.IDLE_STATE = False
-        self.GET_INIT_GAINS_STATE = False
-        self.GET_DATA_STATE = False
-        self.OPTIMIZATION_STATE = False
-
-    def execIdleState(self):
-        rospy.loginfo_throttle(1, "Executing the IDLE STATE \n")
-
-        if self._start_tuning:
-            self._start_tuning = False
-            self._is_tuning_running = True
+    def startTuning(self):
+        """Starts the tuning process"""
+        if self._is_tuning_running:
+            rospy.logwarn("Tuning is already in progress")
+        else:
             self.resetStates()
-            self.GET_INIT_GAINS_STATE = True
+            self.IDLE_STATE = True
+            self._start_tuning = True
+            rospy.loginfo("Tuning is started")
 
-    def execGetGainsState(self):
-        # TODO: Implement
-        # Gains of which controller ??
-        pass
-
-    def execGetDataState(self):
-        # TODO Implement
-        pass
-
-    def execOptimizationState(Self):
-        # TODO Implement
-        pass
+    def stopTuning(self):
+        """Stops the tuning process"""
+        self.resetStates()
+        self._start_tuning=False
+        self._is_tuning_running = False
+        self._opt_failure_counter=0
+        self._current_opt_iteration = 0
+        self._data.resetDict() # clear data buffers
+        self.IDLE_STATE=True
+        rospy.loginfo("Tuning is stopped")
 
     def increaseStreamRates(self):
         """Requests from PX4 an increase in stream rates of commanded/feedback signals
@@ -472,6 +468,163 @@ class PX4Tuner:
         # If reached here, means all good!
         return True
 
+    #############################################################
+    #                       State Machine                       #
+    #############################################################
+
+    def resetStates(self):
+        """Reset all states to FALSE"""
+        self.IDLE_STATE = False
+        self.GET_INIT_GAINS_STATE = False
+        self.GET_DATA_STATE = False
+        self.OPTIMIZATION_STATE = False
+
+    def execIdleState(self):
+        """Implementation of IDLE_STATE"""
+        rospy.loginfo_throttle(1, "Executing the IDLE STATE \n")
+
+        if self._start_tuning:
+            self._start_tuning = False
+            self._is_tuning_running = True
+            self.resetStates()
+            self.GET_INIT_GAINS_STATE = True
+
+    def execGetGainsState(self):
+        """Implementation of GET_INIT_GAINS_STATE"""   
+        rospy.loginfo_throttle(1, "Executing the GET_INIT_GAINS_STATE \n")
+
+        # roll rate
+        kp,ki,kd=self.getRatePIDGains(axis='ROLL')
+        if kp is None:
+            rospy.logerr("Could not get ROLLRATE PID gains. Exiting tuning process")
+            self.stopTuning()
+            return
+        self._roll_rate_pid.kp = kp
+        self._roll_rate_pid.ki = ki
+        self._roll_rate_pid.kd = kd
+
+        # pitch rate
+        kp,ki,kd=self.getRatePIDGains(axis='PITCH')
+        if kp is None:
+            rospy.logerr("Could not get PITCHRATE PID gains. Exiting tuning process")
+            self.stopTuning()
+            return
+        self._pitch_rate_pid.kp = kp
+        self._pitch_rate_pid.ki = ki
+        self._pitch_rate_pid.kd = kd
+
+        self.resetStates()
+        self.GET_DATA_STATE = True
+        self._data_buffering_start_t= time.time()
+
+
+    def execGetDataState(self):
+        """Implementatio of GET_DATA_STATE"""
+        rospy.loginfo_throttle(1, "Executing the GET_DATA_STATE \n")
+
+        now = time.time()
+        if ( (now - self._data_buffering_start_t) > self._data_buffering_timeout):
+            rospy.logerr("Data buffering timedout. Aborting tuning process")
+            self.stopTuning()
+            return
+
+        if (self._data.gotEnoughRateData(t=self._data_len_sec)):
+            rospy.logdebug("[execGetDataState] Got enough angular rate raw data")
+
+            # Process data
+            data=self._data.prepRollRate()
+            if data is None:
+                rospy.logerr("Processed roll rate data has NaN value(s). Exiting tuning process")
+                self.stopTuning()
+                return
+
+            data=self._data.prepPitchRate()
+            if data is None:
+                rospy.logerr("Processed pitch rate data has NaN value(s). Exiting tuning process")
+                self.stopTuning()
+                return
+
+
+            self.resetStates()
+            self.OPTIMIZATION_STATE=True
+            self._opt_start_t = time.time()
+
+    def execOptimizationState(self):
+        """Implementation of OPTIMIZATION_STATE"""
+        rospy.loginfo_throttle(1, "Executing the OPTIMIZATION_STATE \n")
+
+        if (self._opt_failure_counter > self._opt_max_failures):
+            rospy.logerr("Max optimization failures is reached. Aborting tuning process.\n")
+            self.stopTuning()
+            return
+
+        if (self._current_opt_iteration > self._opt_max_iter):
+            rospy.logwarn("Max optimization iterations {} is reached".format(self._opt_max_iter))
+            self.stopTuning()
+            return
+
+        dt = time.time() - self._opt_start_t
+        if (dt > self._opt_max_time):
+            rospy.logerr("Max optimization time {} is reached".format(dt))
+            self.stopTuning()
+            return
+
+        self._current_opt_iteration +=1
+
+        # update roll gains
+        self._roll_rate_optimizer.setSignals(r=np.array(self._data._prep_roll_rate_cmd),u=np.array(self._data._prep_roll_cnt_output),y=np.array(self._data._prep_roll_rate))
+        num=utils.getPIDCoeffFromGains(kp=self._roll_rate_pid.kp, ki=self._roll_rate_pid.ki, kd=self._roll_rate_pid.kd, dt=self._sampling_dt)
+        self._roll_rate_optimizer.setContCoeffs(den_coeff=[1,0,-1], num_coeff=num)
+        good =self._roll_rate_optimizer.update(iter=self._current_opt_iteration)
+        if not good:
+            rospy.logerr("Roll rate optimization was not successful in iteration {}.".format(self._current_opt_iteration))
+            self._opt_failure_counter +=1
+        else: # Good
+            # Get new conrtroller coeffs
+            den,num=self._roll_rate_optimizer.getNewContCoeff()
+            kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=self._sampling_dt) 
+            # TODO Is the following limiting method safe?
+            K=utils.limitPIDGains(P=kp, I=ki, D=kd, kp_min=0.05, kp_max=0.5, ki_min=0.01, ki_max=0.4, kd_min=0.001, kd_max=0.005)
+            if K is None:
+                rospy.logerr("Roll rate PID coeffs is None. Skipping roll rate gain update")
+                self._opt_failure_counter +=1
+            else:
+                good=self.setRatePIDGains(axis='ROLL', kP=K[0], kI=K[1], kD=K[2])
+                if not good:
+                    rospy.logerr("Error in sending new roll rate pid gains to PX4")
+                    self._opt_failure_counter +=1
+                else:
+                    self._roll_rate_pid.kp = K[0]
+                    self._roll_rate_pid.ki = K[1]
+                    self._roll_rate_pid.kd = K[2]
+
+        # update pitch gains
+        self._pitch_rate_optimizer.setSignals(r=np.array(self._data._prep_pitch_rate_cmd),u=np.array(self._data._prep_pitch_cnt_output),y=np.array(self._data._prep_pitch_rate))
+        num=utils.getPIDCoeffFromGains(kp=self._pitch_rate_pid.kp, ki=self._pitch_rate_pid.ki, kd=self._pitch_rate_pid.kd, dt=self._sampling_dt)
+        self._pitch_rate_optimizer.setContCoeffs(den_coeff=[1,0,-1], num_coeff=num)
+        good =self._pitch_rate_optimizer.update(iter=self._current_opt_iteration)
+        if not good:
+            rospy.logerr("Pitch rate optimization was not successful in iteration {}.".format(self._current_opt_iteration))
+            self._opt_failure_counter +=1
+        else: # Good
+            # Get new conrtroller coeffs
+            den,num=self._pitch_rate_optimizer.getNewContCoeff()
+            kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=self._sampling_dt) 
+            # TODO Is the following limiting method safe?
+            K=utils.limitPIDGains(P=kp, I=ki, D=kd, kp_min=0.05, kp_max=0.5, ki_min=0.01, ki_max=0.4, kd_min=0.001, kd_max=0.005)
+            if K is None:
+                rospy.logerr("Pitch rate PID coeffs is None. Skipping pitch rate gain update")
+                self._opt_failure_counter +=1
+            else:
+                good=self.setRatePIDGains(axis='PITCH', kP=K[0], kI=K[1], kD=K[2])
+                if not good:
+                    rospy.logerr("Error in sending new pitch rate pid gains to PX4")
+                    self._opt_failure_counter +=1
+                else:
+                    self._pitch_rate_pid.kp = K[0]
+                    self._pitch_rate_pid.ki = K[1]
+                    self._pitch_rate_pid.kd = K[2]
+
 
     # --------------------------------------------------------------------------- #
     #                               Tuning methods
@@ -512,7 +665,7 @@ class PX4Tuner:
             return
 
         # Wait for some time for enough data to be collected    
-        while(not self.gotEnoughRateData(t=self._excitation_t)):
+        while(not self.gotEnoughRateData(t=self._data_len_sec)):
             pass
         self.stopRecordingData()
 
@@ -601,7 +754,7 @@ class PX4Tuner:
                 #     rospy.logerr("[tuneRatePID] Error in applying step input.Exiting tuning process.")
                 #     self._is_tuning_running=False
                 #     break
-                while(not self.gotEnoughRateData(t=self._excitation_t)):
+                while(not self.gotEnoughRateData(t=self._data_len_sec)):
                     if(self._debug):
                         rospy.loginfo_throttle(1, "[tuneRatePID] Waiting for enough data to be collected")
                     pass

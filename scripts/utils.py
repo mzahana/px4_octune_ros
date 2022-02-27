@@ -3,10 +3,53 @@ logging.basicConfig(level=logging.DEBUG)
 
 class PIDGains:
     def __init__(self):
-        self.kp = 0.0
-        self.ki = 0
-        self.kd = 0
+        self._kp = 0.0
+        self._ki = 0
+        self._kd = 0
         
+        self._kp_list=[]
+        self._ki_list=[]
+        self._kd_list=[]
+    
+    @property
+    def kp(self):
+        return self._kp
+
+    @kp.setter
+    def kp(self, val):
+        if val >= 0:
+            self._kp = val
+            self._kp_list.append(val)
+        else:
+            logging.warn("kp {} should be >=0".format(val))
+            return
+
+    @property
+    def ki(self):
+        return self._ki
+
+    @ki.setter
+    def ki(self, val):
+        if val >= 0:
+            self._ki = val
+            self._ki_list.append(val)
+        else:
+            logging.warn("ki {} should be >=0".format(val))
+            return
+    
+    @property
+    def kd(self):
+        return self._kd
+
+    @kd.setter
+    def kd(self, val):
+        if val >= 0:
+            self._kd = val
+            self._kd_list.append(val)
+        else:
+            logging.warn("kd {} should be >=0".format(val))
+            return
+
 def getPIDGainsFromCoeff(num=None, dt=0.001):
     """Computes Kp,Ki,Kd of a discrete PID controller from its transfer function's numerator coeff
     Numerator is of the form n0*Z^2+n1*Z+n2
@@ -93,7 +136,7 @@ def limitPIDGains(P=None, I=None, D=None, kp_min=0.0, kp_max=0.5, ki_min=0.0, ki
     kD=None
     if P is None or I is None or D is None:
         logging.error("[limitPIDGains] One of the coeffs is None")
-        return kP, kI, kD
+        return None
     kP=P
     kI=I
     kD=D
@@ -102,16 +145,18 @@ def limitPIDGains(P=None, I=None, D=None, kp_min=0.0, kp_max=0.5, ki_min=0.0, ki
         kP=kp_min
     if P > kp_max:
         kP=kp_max
+
     if I<ki_min:
         kI=ki_min
     if I>ki_max:
         kI=ki_max
+
     if D<kd_min:
         kD=kd_min
     if D>kd_max:
         kD=kd_max
 
-    return kP, kI, kD
+    return (kP, kI, kD)
 
 def test():
     logging.info("\nThis is a test function.\n")

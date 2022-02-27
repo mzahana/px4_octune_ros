@@ -27,8 +27,21 @@ class ProcessData:
         # Feedback, local position,  dictionary, four arrays, time & data
         self._pos_dict=                 {'time':[], 'x':[], 'y':[], 'z':[]}
 
+        # Processed Roll rate data
+        self._prep_roll_rate_cmd=None
+        self._prep_roll_rate=None
+        self._prep_roll_cnt_output=None
+
+        # Processed Pitch rate data
+        self._prep_pitch_rate_cmd=None
+        self._prep_pitch_rate=None
+        self._prep_pitch_cnt_output=None
+
         # Sampling/upsampling time, seconds
         self._sampling_dt = 0.005
+        
+        # Expected raw data frequency samples/sec
+        self._raw_data_freq = 50.0 
 
         # Max data length in seconds
         self._data_len_sec = 2.0
@@ -91,9 +104,9 @@ class ProcessData:
 
     def gotEnoughRateData(self, t=1.0):
         # 50 is the expected number of samples/sec
-        cmd_att_rate = len(self._cmd_att_rate_dict['time']) > int(ceil(t*50))
-        att_rate = len(self._att_rate_dict['time']) > int(ceil(t*50))
-        att_cnt = len(self._ang_rate_cnt_output_dict['time']) > int(ceil(t*50))
+        cmd_att_rate = len(self._cmd_att_rate_dict['time']) > int(ceil(t*self._raw_data_freq))
+        att_rate = len(self._att_rate_dict['time']) > int(ceil(t*self._raw_data_freq))
+        att_cnt = len(self._ang_rate_cnt_output_dict['time']) > int(ceil(t*self._raw_data_freq))
         if cmd_att_rate and att_rate and att_cnt:
             return True
         else:
@@ -120,25 +133,25 @@ class ProcessData:
         prep_cnt_data=None
         if cmd_df is None:
             logging.error("Commanded dataframe is None")
-            return prep_cmd_data,prep_data,prep_cnt_data
+            return None
         if fb_df is None:
             logging.error("Feedback dataframe is None")
-            return prep_cmd_data,prep_data,prep_cnt_data
+            return None
         if cmd_data_label is None:
             logging.error("Commanded data label is None")
-            return prep_cmd_data,prep_data,prep_cnt_data
+            return None
         if data_label is None:
             logging.error("Feedback data label is None")
-            return prep_cmd_data,prep_data,prep_cnt_data
+            return None
         if cnt_df is None:
             logging.error("Control data is None")
-            return prep_cmd_data,prep_data,prep_cnt_data
+            return None
         if cnt_label is None:
             logging.error("Control data label is None")
-            return prep_cmd_data,prep_data,prep_cnt_data
+            return None
 
-        if self._debug:
-            logging.info("[prepData] Length of {}={}, length of {}={}, length of {}={}".format( cmd_data_label,len(cmd_df),data_label, len(fb_df), cnt_label,len(cnt_df)))
+        
+        logging.debug("[prepData] Length of {}={}, length of {}={}, length of {}={}".format( cmd_data_label,len(cmd_df),data_label, len(fb_df), cnt_label,len(cnt_df)))
 
         # Merge
         df_merged =cmd_df.merge(fb_df, how='outer', left_index=True, right_index=True)
@@ -172,10 +185,9 @@ class ProcessData:
         # Finally extract processed data as lists
         prep_cmd_data =  df_common[cmd_data_label].tolist()
         prep_data = df_common[data_label].tolist()
-        prep_cnt_data = df_common[cnt_label].tolist()
-        
+        prep_cnt_data = df_common[cnt_label].tolist()        
             
-        return prep_cmd_data, prep_data, prep_cnt_data
+        return (prep_cmd_data, prep_data, prep_cnt_data)
 
     def prepRollRate(self):
         """Merges roll rate data (target and actual) and the corresponding controller output signal, resample, and align their timestamps.
@@ -186,17 +198,15 @@ class ProcessData:
         @return prep_roll_rate_cmd Numpy array
         @return prep_roll_rate Numpy array
         """
-        prep_roll_rate_cmd=None
-        prep_roll_rate=None
-        prep_cnt_output=None
+        
         # Sanity check
         if len(self._cmd_att_rate_dict['time']) < 1:
             logging.error("[prepRollRate] No commanded attitude rate data to process")
-            return prep_roll_rate_cmd, prep_roll_rate
+            return None
 
         if len(self._att_rate_dict['time']) < 1:
             logging.error("[prepRollRate] No feedback attitude rate data to process")
-            return prep_roll_rate_cmd, prep_roll_rate
+            return None
         
         
 
@@ -211,9 +221,10 @@ class ProcessData:
         cnt_idx=pd.to_timedelta(self._ang_rate_cnt_output_dict['time'], unit='us') # 'us' = micro seconds
         cnt_roll_rate = pd.DataFrame(self._ang_rate_cnt_output_dict['x'], index=cnt_idx, columns =['roll_cnt'])
 
-        prep_roll_rate_cmd, prep_roll_rate, prep_cnt_output=self.prepData(cmd_df=cmd_roll_rate, fb_df=fb_roll_rate,cnt_df=cnt_roll_rate, cmd_data_label='cmd_roll_rate', data_label='roll_rate', cnt_label='roll_cnt')
+        self._prep_roll_rate_cmd, self._prep_roll_rate, self._prep_roll_cnt_output=self.prepData(cmd_df=cmd_roll_rate, fb_df=fb_roll_rate,cnt_df=cnt_roll_rate, cmd_data_label='cmd_roll_rate', data_label='roll_rate', cnt_label='roll_cnt')
+        processed_data = (self._prep_roll_rate_cmd, self._prep_roll_rate, self._prep_roll_cnt_output)
 
-        return prep_roll_rate_cmd, prep_roll_rate, prep_cnt_output
+        return processed_data
 
     def prepPitchRate(self):
         """Merges Pitch rate data (target and actual), resample, and align their timestamps.
@@ -229,11 +240,11 @@ class ProcessData:
         # Sanity check
         if len(self._cmd_att_rate_dict['time']) < 1:
             logging.error("[prepPitchRate] No commanded attitude rate data to process")
-            return prep_pitch_rate_cmd, prep_pitch_rate
+            return None
 
         if len(self._att_rate_dict['time']) < 1:
             logging.error("[prepPitchRate] No feedback attitude rate data to process")
-            return prep_pitch_rate_cmd, prep_pitch_rate
+            return None
         
         # TODO implement data pre-processing
         # setup the time index list
@@ -243,10 +254,14 @@ class ProcessData:
         # feedback
         fb_idx=pd.to_timedelta(self._att_rate_dict['time'], unit='us') # 'us' = micro seconds
         fb_pitch_rate = pd.DataFrame(self._att_rate_dict['y'], index=fb_idx, columns =['pitch_rate'])
+        # controller output
+        cnt_idx=pd.to_timedelta(self._ang_rate_cnt_output_dict['time'], unit='us') # 'us' = micro seconds
+        cnt_pitch_rate = pd.DataFrame(self._ang_rate_cnt_output_dict['y'], index=cnt_idx, columns =['pitch_cnt'])
 
-        prep_pitch_rate_cmd, prep_pitch_rate=self.prepData(cmd_df=cmd_pitch_rate, fb_df=fb_pitch_rate, cmd_data_label='cmd_pitch_rate', data_label='pitch_rate')
+        self._prep_pitch_rate_cmd, self._prep_pitch_rate, self._prep_pitch_cnt_output=self.prepData(cmd_df=cmd_pitch_rate, fb_df=fb_pitch_rate,cnt_df=cnt_pitch_rate, cmd_data_label='cmd_pitch_rate', data_label='pitch_rate', cnt_label='pitch_cnt')
+        processed_data = (self._prep_pitch_rate_cmd, self._prep_pitch_rate, self._prep_pitch_cnt_output)
 
-        return prep_pitch_rate_cmd, prep_pitch_rate
+        return processed_data
 
     def prepYawRate(self):
         """Merges Yaw rate data (target and actual), resample, and align their timestamps.
