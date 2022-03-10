@@ -81,7 +81,7 @@ class PX4Tuner:
         # TODO need optimizers for angular and linear positions (Just P controllers )
 
         # Max optimization iterations
-        self._opt_max_iter=rospy.get_param('~opt_max_iter', 300)
+        self._opt_max_iter=rospy.get_param('~opt_max_iter', 1000)
         # Max optimization time (seconds)
         self._opt_max_time=rospy.get_param('~opt_max_time', 60.0)
         self._opt_max_failures = rospy.get_param("~opt_max_failures", 10)
@@ -93,6 +93,8 @@ class PX4Tuner:
         self._start_tuning=False
         # Tuning indicator
         self._is_tuning_running=False
+        # Flag to start/stop inserting data into data buffers
+        self._insert_data = True
 
         # States of the tuning state machine
         self.IDLE_STATE = False
@@ -147,10 +149,20 @@ class PX4Tuner:
 
         return []
 
+    def cmdPosCb(self, msg):
+        """Commanded position callback
+        """
+        if msg is None:
+            return
+        # TODO
+
     def cmdAttCb(self, msg):
         """Callback of commanded attitude, and attitude rates
         """
         if msg is None:
+            return
+
+        if not self._insert_data:
             return
 
         t = rospy.Time(secs=msg.header.stamp.secs, nsecs=msg.header.stamp.nsecs)
@@ -188,6 +200,9 @@ class PX4Tuner:
         if msg is None:
             return
 
+        if not self._insert_data:
+            return
+
         t = rospy.Time(secs=msg.header.stamp.secs, nsecs=msg.header.stamp.nsecs)
         t_micro = t.to_nsec()/1000
 
@@ -204,6 +219,10 @@ class PX4Tuner:
         """Raw IMU values (feedback); gyros, accelerometers"""
         if msg is None:
             return
+
+        if not self._insert_data:
+            return
+        
         t = rospy.Time(secs=msg.header.stamp.secs, nsecs=msg.header.stamp.nsecs)
         t_micro = t.to_nsec()/1000
         x=msg.angular_velocity.x
@@ -218,6 +237,10 @@ class PX4Tuner:
         """Processed IMU (feedback); attitude """
         if msg is None:
             return
+
+        if not self._insert_data:
+            return
+
         # TODO
         t = rospy.Time(secs=msg.header.stamp.secs, nsecs=msg.header.stamp.nsecs)
         t_micro = t.to_nsec()/1000
@@ -264,6 +287,7 @@ class PX4Tuner:
             self.resetStates()
             self.IDLE_STATE = True
             self._start_tuning = True
+            self._insert_data = True
             rospy.loginfo("Tuning is started")
 
     def stopTuning(self):
@@ -519,8 +543,11 @@ class PX4Tuner:
 
 
     def execGetDataState(self):
-        """Implementatio of GET_DATA_STATE"""
+        """Implementation of GET_DATA_STATE"""
         rospy.loginfo_throttle(1, "Executing the GET_DATA_STATE \n")
+
+        if not self._insert_data:
+            self._insert_data = True
 
         now = time.time()
         if ( (now - self._data_buffering_start_t) > self._data_buffering_timeout):
@@ -530,6 +557,8 @@ class PX4Tuner:
 
         if (self._data.gotEnoughRateData(t=self._data_len_sec)):
             rospy.logdebug("[execGetDataState] Got enough angular rate raw data")
+
+            self._insert_data = False
 
             # Process data
             data=self._data.prepRollRate()
@@ -544,10 +573,12 @@ class PX4Tuner:
                 self.stopTuning()
                 return
 
+            self._insert_data = True
 
             self.resetStates()
             self.OPTIMIZATION_STATE=True
             self._opt_start_t = time.time()
+        #else: stay in this state to collect more data
 
     def execOptimizationState(self):
         """Implementation of OPTIMIZATION_STATE"""
@@ -624,6 +655,12 @@ class PX4Tuner:
                     self._pitch_rate_pid.kp = K[0]
                     self._pitch_rate_pid.ki = K[1]
                     self._pitch_rate_pid.kd = K[2]
+
+        # All good, go and collect data again to prepare for bew optimization iteration
+        self._data.resetDict()
+        self._data_buffering_start_t = time.time()
+        self.resetStates()
+        self.GET_DATA_STATE = True
 
 
     # --------------------------------------------------------------------------- #
@@ -838,7 +875,17 @@ class PX4Tuner:
         loop_rate = rospy.Rate(100)
 
         while not rospy.is_shutdown():
-            # TODO: swithc between the tuning state machine
+            # TODO: switch between the tuning state machine's state
+            if self.IDLE_STATE:
+                self.execIdleState()
+            elif self.GET_INIT_GAINS_STATE:
+                self.execGetGainsState()
+            elif self.GET_DATA_STATE:
+                self.execGetDataState()
+            elif self.OPTIMIZATION_STATE:
+                self.execOptimizationState()
+            else:
+                rospy.logwarn_throttle(1, "\n Unsupported state \n")
             loop_rate.sleep()
         
         
@@ -847,6 +894,7 @@ def main():
     rospy.loginfo("Starting px4_tuner_node...\n")
     obj = PX4Tuner()
     obj._debug=True
+    obj.IDLE_STATE=True
     obj.mainLoop()
 
 

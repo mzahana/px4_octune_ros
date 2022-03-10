@@ -6,7 +6,7 @@ logging.basicConfig(level=logging.DEBUG)
 
 class ProcessData:
     def __init__(self):
-        
+        self._debug = False
         # Angular rate controller output (actuator_controls msg in PX4); PID output
         self._ang_rate_cnt_output_dict= {'time':[], 'x':[], 'y':[], 'z':[]}
         # Commanded attitude rates, dictionary, has four arrays, timesatmp and commanded attitude rates
@@ -103,6 +103,8 @@ class ProcessData:
         return out_dict
 
     def gotEnoughRateData(self, t=1.0):
+        """Checks if enough "raw" data is received
+        """
         # 50 is the expected number of samples/sec
         cmd_att_rate = len(self._cmd_att_rate_dict['time']) > int(ceil(t*self._raw_data_freq))
         att_rate = len(self._att_rate_dict['time']) > int(ceil(t*self._raw_data_freq))
