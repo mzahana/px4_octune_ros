@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 
-from ctypes import util
 import time
 import rospy
 from mavros_msgs.msg import AttitudeTarget, ActuatorControl, PositionTarget, State, ExtendedState
@@ -19,6 +18,8 @@ import matplotlib.pyplot as plt
 import tf
 import numpy as np
 
+from px4_octune_ros.msg import TuningState
+
 import utils
 from process_data import ProcessData
 
@@ -28,10 +29,10 @@ class PX4Tuner:
         self._debug = rospy.get_param('~debug', False)
 
         # Desired duration of collected data samples, seconds
-        self._data_len_sec = rospy.get_param('~data_len_sec', 2.0)
+        self._data_len_sec = rospy.get_param('~data_len_sec', 1.0)
 
         # Sampling/upsampling time, seconds
-        self._sampling_dt = rospy.get_param('~sampling_dt', 0.005)
+        self._sampling_dt = rospy.get_param('~sampling_dt', 0.01)
 
         # Maximum array length, maybe dependent on excitiation time and sampling time?
         self._max_arr_L=int(ceil(self._data_len_sec/self._sampling_dt))
@@ -44,7 +45,7 @@ class PX4Tuner:
         self._data._sampling_dt = self._sampling_dt
         self._data._data_len_sec = self._data_len_sec
         self._data._raw_data_freq = 50.0
-        self._data_buffering_timeout = self._data_len_sec + 0.5
+        self._data_buffering_timeout = self._data_len_sec + 0.1
         self._data_buffering_start_t = time.time()
 
         # PID gains
@@ -57,14 +58,26 @@ class PX4Tuner:
         self._roll_rate_optimizer=BackProbOptimizer()
         self._roll_rate_optimizer._debug=False
         self._roll_rate_optimizer._alpha=0.002
+        self._roll_rate_optimizer.updateAlphaList()
         self._roll_rate_optimizer._use_optimal_alpha = True # optimize learning rate to gurantee convergence
         self._roll_rate_optimizer._use_adam = False # Use gradient descent
+        # Useful for plotting
+        self._roll_rate_init_data = {'r':[], 'u':[], 'y':[]}
+        self._roll_rate_final_data = {'r':[], 'u':[], 'y':[]}
+        # ROS msg
+        self._roll_rate_msg = TuningState()
 
         self._pitch_rate_optimizer=BackProbOptimizer()
         self._pitch_rate_optimizer._debug=False
         self._pitch_rate_optimizer._alpha=0.002
+        self._pitch_rate_optimizer.updateAlphaList()
         self._pitch_rate_optimizer._use_optimal_alpha = True # optimize learning rate to gurantee convergence
         self._pitch_rate_optimizer._use_adam = False # Use gradient descent
+        # Useful for plotting
+        self._pitch_rate_init_data = {'r':[], 'u':[], 'y':[]}
+        self._pitch_rate_final_data = {'r':[], 'u':[], 'y':[]}
+        # ROS msg
+        self._pitch_rate_msg = TuningState()
 
         self._vel_xy_optimizer=BackProbOptimizer()
         self._vel_xy_optimizer._debug=False
@@ -104,7 +117,8 @@ class PX4Tuner:
 
 
         # ----------------------------------- Publishers -------------------------- #
-
+        self._roll_rate_pub = rospy.Publisher("roll_rate/tuning_state", TuningState, queue_size=10)
+        self._pitch_rate_pub = rospy.Publisher("pitch_rate/tuning_state", TuningState, queue_size=10)
 
         # ----------------------------------- Subscribers -------------------------- #
         # Commanded attitude and attitude rates
@@ -131,6 +145,8 @@ class PX4Tuner:
         rospy.Service('px4_octune/start_tune', Empty, self.startTuningSrv)
         # Service for testing data pre-process
         rospy.Service('px4_octune/stop_tune', Empty, self.stopTuningSrv)
+        # Plot service
+        rospy.Service('px4_octune/plot', Empty, self.plotSrv)
 
         # Request higher data streams
         ret = self.increaseStreamRates()
@@ -146,6 +162,11 @@ class PX4Tuner:
 
     def stopTuningSrv(self, req):
         self.stopTuning()
+
+        return []
+
+    def plotSrv(self, req):
+        self.plotData()
 
         return []
 
@@ -174,7 +195,8 @@ class PX4Tuner:
             msg.orientation.y,
             msg.orientation.z,
             msg.orientation.w)
-        euler = tf.transformations.euler_from_quaternion(q, 'rzyx') #yaw/pitch/roll
+        # euler = tf.transformations.euler_from_quaternion(q, 'rzyx') #yaw/pitch/roll
+        euler = tf.transformations.euler_from_quaternion(q)
         roll_x=euler[2]
         pitch_y=euler[1]
         yaw_z=euler[0]
@@ -251,10 +273,11 @@ class PX4Tuner:
             msg.orientation.y,
             msg.orientation.z,
             msg.orientation.w)
-        euler = tf.transformations.euler_from_quaternion(q, 'rzyx') #yaw/pitch/roll
-        roll_x=euler[2]
+        # euler = tf.transformations.euler_from_quaternion(q, 'rzyx') #yaw/pitch/roll
+        euler = tf.transformations.euler_from_quaternion(q)
+        roll_x=euler[0]
         pitch_y=euler[1]
-        yaw_z=euler[0]
+        yaw_z=euler[2]
 
         self._data._att_dict = self._data.insertData(dict=self._data._att_dict, t=t_micro, x=roll_x, y=pitch_y, z=yaw_z)
             # if self._debug:
@@ -299,6 +322,7 @@ class PX4Tuner:
         self._current_opt_iteration = 0
         self._data.resetDict() # clear data buffers
         self.IDLE_STATE=True
+    
         rospy.loginfo("Tuning is stopped")
 
     def increaseStreamRates(self):
@@ -492,6 +516,133 @@ class PX4Tuner:
         # If reached here, means all good!
         return True
 
+    def publishRollRateMsg(self, ros_time):
+        """Updates the self._roll_rate_msg and publishes it
+
+        Parameters
+        --
+        @param ros_time ROS time stamp rospy.Time
+        """
+        self._roll_rate_msg.header.stamp= ros_time
+        self._roll_rate_msg.iteration_number = self._current_opt_iteration
+        self._roll_rate_msg.learning_rate = self._roll_rate_optimizer._alpha
+        self._roll_rate_msg.objective_value = self._roll_rate_optimizer.getObjective()
+        self._roll_rate_msg.eig_value = self._roll_rate_optimizer._smallest_eig_val
+        self._roll_rate_msg.kp = self._roll_rate_pid.kp
+        self._roll_rate_msg.ki = self._roll_rate_pid.ki
+        self._roll_rate_msg.kd = self._roll_rate_pid.kd
+        self._roll_rate_pub.publish(self._roll_rate_msg)
+
+    def publishPitchRateMsg(self, ros_time):
+        """Updates the self._pitch_rate_msg and publishes it
+
+        Parameters
+        --
+        @param ros_time ROS time stamp rospy.Time
+        """
+        self._pitch_rate_msg.header.stamp= ros_time
+        self._pitch_rate_msg.iteration_number = self._current_opt_iteration
+        self._pitch_rate_msg.learning_rate = self._pitch_rate_optimizer._alpha
+        self._pitch_rate_msg.objective_value = self._pitch_rate_optimizer.getObjective()
+        self._pitch_rate_msg.eig_value = self._pitch_rate_optimizer._smallest_eig_val
+        self._pitch_rate_msg.kp = self._pitch_rate_pid.kp
+        self._pitch_rate_msg.ki = self._pitch_rate_pid.ki
+        self._pitch_rate_msg.kd = self._pitch_rate_pid.kd
+        self._pitch_rate_pub.publish(self._pitch_rate_msg)
+
+    def plotData(self):
+        """
+        This should not be used in real-time. This is is only for debugging, and it's called by a ROS service.
+        It's supposed to plot everything ! Initial and final data, learning rates, PID gains, you name it!
+        """
+        if self._is_tuning_running:
+            rospy.logerr("Tuning is still running. Stop tuning first.")
+            return
+
+        try:
+            # Roll rate: initial response
+            plt.title("Roll rate: Initial response")
+            plt.plot(self._roll_rate_init_data['r'], 'r', label='Initial desired reference')
+            plt.plot(self._roll_rate_init_data['y'], 'k', label='Initial response')
+            plt.ylabel('rad/s')
+            plt.ylim(-3,3)
+            plt.legend()
+            plt.show()
+
+            plt.title("Roll rate: Final response")
+            plt.plot(self._roll_rate_final_data['r'], 'r', label='Final desired reference')
+            plt.plot(self._roll_rate_final_data['y'], 'k', label='Final response')
+            plt.ylabel('rad/s')
+            plt.ylim(-3,3)
+            plt.legend()
+            plt.show()
+
+            # Roll rate:  Learning rate vs. optimization iterations
+            plt.title("Roll rate: Learning rate vs. iteration")
+            plt.plot(self._roll_rate_optimizer._alpha_list, 'k', label='Learning rate')
+            plt.xlabel('Iteration')
+            plt.legend()
+            plt.show()
+
+            # Roll rate:  Performance vs. optimization iterations
+            plt.title("Roll rate: Performance vs. iteration")
+            plt.plot(self._roll_rate_optimizer._performance_list, 'k', label='Performance')
+            plt.xlabel('Iteration')
+            plt.legend()
+            plt.show()
+
+            # Roll rate:  PID gains vs. iteration
+            plt.title("Roll rate: PID gains vs. iteration")
+            plt.plot(self._roll_rate_pid._kp_list, 'k', label='kp')
+            plt.plot(self._roll_rate_pid._ki_list, 'r', label='ki')
+            plt.plot(self._roll_rate_pid._kd_list, 'b', label='kd')
+            plt.xlabel('Iteration')
+            plt.legend()
+            plt.show()
+
+            # ----------------------------------- #
+            # Pitch rate: initial response
+            plt.title("Pitch rate: Initial response")
+            plt.plot(self._pitch_rate_init_data['r'], 'r', label='Initial desired reference')
+            plt.plot(self._pitch_rate_init_data['y'], 'k', label='Initial response')
+            plt.ylabel('rad/s')
+            plt.ylim(-3,3)
+            plt.legend()
+            plt.show()
+
+            plt.title("Pitch rate: Final response")
+            plt.plot(self._pitch_rate_final_data['r'], 'r', label='Final desired reference')
+            plt.plot(self._pitch_rate_final_data['y'], 'k', label='Final response')
+            plt.ylabel('rad/s')
+            plt.ylim(-3,3)
+            plt.legend()
+            plt.show()
+
+            # Pitch rate:  Learning rate vs. optimization iterations
+            plt.title("Pitch rate: Learning rate vs. iteration")
+            plt.plot(self._pitch_rate_optimizer._alpha_list, 'k', label='Learning rate')
+            plt.xlabel('Iteration')
+            plt.legend()
+            plt.show()
+
+            # Pitch rate:  Performance vs. optimization iterations
+            plt.title("Pitch rate: Performance vs. iteration")
+            plt.plot(self._pitch_rate_optimizer._performance_list, 'k', label='Performance')
+            plt.xlabel('Iteration')
+            plt.legend()
+            plt.show()
+
+            # Pitch rate:  PID gains vs. iteration
+            plt.title("Pitch rate: PID gains vs. iteration")
+            plt.plot(self._pitch_rate_pid._kp_list, 'k', label='kp')
+            plt.plot(self._pitch_rate_pid._ki_list, 'r', label='ki')
+            plt.plot(self._pitch_rate_pid._kd_list, 'b', label='kd')
+            plt.xlabel('Iteration')
+            plt.legend()
+            plt.show()
+        except:
+            rospy.logerr("Error in plotData")
+
     #############################################################
     #                       State Machine                       #
     #############################################################
@@ -510,6 +661,12 @@ class PX4Tuner:
         if self._start_tuning:
             self._start_tuning = False
             self._is_tuning_running = True
+            
+            self._roll_rate_optimizer.resetLists()
+            self._roll_rate_pid.resetLists()
+            self._pitch_rate_optimizer.resetLists()
+            self._pitch_rate_pid.resetLists()
+
             self.resetStates()
             self.GET_INIT_GAINS_STATE = True
 
@@ -577,7 +734,8 @@ class PX4Tuner:
 
             self.resetStates()
             self.OPTIMIZATION_STATE=True
-            self._opt_start_t = time.time()
+            if self._current_opt_iteration == 0:
+                self._opt_start_t = time.time()
         #else: stay in this state to collect more data
 
     def execOptimizationState(self):
@@ -600,11 +758,14 @@ class PX4Tuner:
             self.stopTuning()
             return
 
+        # Update current itertion number
         self._current_opt_iteration +=1
+        rospy.loginfo_throttle(1, "Optimization iteration %s", self._current_opt_iteration)
 
         # update roll gains
         self._roll_rate_optimizer.setSignals(r=np.array(self._data._prep_roll_rate_cmd),u=np.array(self._data._prep_roll_cnt_output),y=np.array(self._data._prep_roll_rate))
-        num=utils.getPIDCoeffFromGains(kp=self._roll_rate_pid.kp, ki=self._roll_rate_pid.ki, kd=self._roll_rate_pid.kd, dt=self._sampling_dt)
+        # num=utils.getPIDCoeffFromGains(kp=self._roll_rate_pid.kp, ki=self._roll_rate_pid.ki, kd=self._roll_rate_pid.kd, dt=self._sampling_dt)
+        num=utils.getPIDCoeffFromGains(kp=self._roll_rate_pid.kp, ki=self._roll_rate_pid.ki, kd=self._roll_rate_pid.kd, dt=1.0)
         self._roll_rate_optimizer.setContCoeffs(den_coeff=[1,0,-1], num_coeff=num)
         good =self._roll_rate_optimizer.update(iter=self._current_opt_iteration)
         if not good:
@@ -613,7 +774,8 @@ class PX4Tuner:
         else: # Good
             # Get new conrtroller coeffs
             den,num=self._roll_rate_optimizer.getNewContCoeff()
-            kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=self._sampling_dt) 
+            # kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=self._sampling_dt) 
+            kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=1.0) 
             # TODO Is the following limiting method safe?
             K=utils.limitPIDGains(P=kp, I=ki, D=kd, kp_min=0.05, kp_max=0.5, ki_min=0.01, ki_max=0.4, kd_min=0.001, kd_max=0.005)
             if K is None:
@@ -628,10 +790,12 @@ class PX4Tuner:
                     self._roll_rate_pid.kp = K[0]
                     self._roll_rate_pid.ki = K[1]
                     self._roll_rate_pid.kd = K[2]
+                    self._roll_rate_pid.updateLists()
 
         # update pitch gains
         self._pitch_rate_optimizer.setSignals(r=np.array(self._data._prep_pitch_rate_cmd),u=np.array(self._data._prep_pitch_cnt_output),y=np.array(self._data._prep_pitch_rate))
-        num=utils.getPIDCoeffFromGains(kp=self._pitch_rate_pid.kp, ki=self._pitch_rate_pid.ki, kd=self._pitch_rate_pid.kd, dt=self._sampling_dt)
+        # num=utils.getPIDCoeffFromGains(kp=self._pitch_rate_pid.kp, ki=self._pitch_rate_pid.ki, kd=self._pitch_rate_pid.kd, dt=self._sampling_dt)
+        num=utils.getPIDCoeffFromGains(kp=self._pitch_rate_pid.kp, ki=self._pitch_rate_pid.ki, kd=self._pitch_rate_pid.kd, dt=1)
         self._pitch_rate_optimizer.setContCoeffs(den_coeff=[1,0,-1], num_coeff=num)
         good =self._pitch_rate_optimizer.update(iter=self._current_opt_iteration)
         if not good:
@@ -640,9 +804,10 @@ class PX4Tuner:
         else: # Good
             # Get new conrtroller coeffs
             den,num=self._pitch_rate_optimizer.getNewContCoeff()
-            kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=self._sampling_dt) 
+            # kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=self._sampling_dt) 
+            kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=1) 
             # TODO Is the following limiting method safe?
-            K=utils.limitPIDGains(P=kp, I=ki, D=kd, kp_min=0.05, kp_max=0.5, ki_min=0.01, ki_max=0.4, kd_min=0.001, kd_max=0.005)
+            K=utils.limitPIDGains(P=kp, I=ki, D=kd, kp_min=0.05, kp_max=0.6, ki_min=0.01, ki_max=0.4, kd_min=0.001, kd_max=0.005)
             if K is None:
                 rospy.logerr("Pitch rate PID coeffs is None. Skipping pitch rate gain update")
                 self._opt_failure_counter +=1
@@ -655,10 +820,45 @@ class PX4Tuner:
                     self._pitch_rate_pid.kp = K[0]
                     self._pitch_rate_pid.ki = K[1]
                     self._pitch_rate_pid.kd = K[2]
+                    self._pitch_rate_pid.updateLists()
+                    # rospy.loginfo_throttle(1, "Pitch rate PID gains: P=%s I=%s D=%s", self._pitch_rate_pid.kp, self._pitch_rate_pid.ki, self._pitch_rate_pid.kd)
 
-        # All good, go and collect data again to prepare for bew optimization iteration
+        # All good, update lists, go and collect data again to prepare for a new optimization iteration
+
+        if self._current_opt_iteration == 1:
+            self._roll_rate_init_data['r'] = self._data._prep_roll_rate_cmd
+            self._roll_rate_init_data['y'] = self._data._prep_roll_rate
+            self._roll_rate_init_data['u'] = self._data._prep_roll_cnt_output
+
+            self._pitch_rate_init_data['r'] = self._data._prep_pitch_rate_cmd
+            self._pitch_rate_init_data['y'] = self._data._prep_pitch_rate
+            self._pitch_rate_init_data['u'] = self._data._prep_pitch_cnt_output
+        
+        self._roll_rate_final_data['r'] = self._data._prep_roll_rate_cmd
+        self._roll_rate_final_data['y'] = self._data._prep_roll_rate
+        self._roll_rate_final_data['u'] = self._data._prep_roll_cnt_output
+
+        self._pitch_rate_final_data['r'] = self._data._prep_pitch_rate_cmd
+        self._pitch_rate_final_data['y'] = self._data._prep_pitch_rate
+        self._pitch_rate_final_data['u'] = self._data._prep_pitch_cnt_output        
+
+        self._roll_rate_optimizer.updateAlphaList()
+        self._roll_rate_optimizer.updatePerformanceList()
+        self._roll_rate_optimizer.updateEigValList()
+
+        self._pitch_rate_optimizer.updateAlphaList()
+        self._pitch_rate_optimizer.updatePerformanceList()
+        self._pitch_rate_optimizer.updateEigValList()
+
+        # publish ROS msgs
+        now = rospy.Time.now()
+        self.publishRollRateMsg(now)
+        self.publishPitchRateMsg(now)
+
+        # clear data buffers, to prepare for receiving fresh data
         self._data.resetDict()
         self._data_buffering_start_t = time.time()
+
         self.resetStates()
         self.GET_DATA_STATE = True
 

@@ -19,7 +19,6 @@ class PIDGains:
     def kp(self, val):
         if val >= 0:
             self._kp = val
-            self._kp_list.append(val)
         else:
             logging.warn("kp {} should be >=0".format(val))
             return
@@ -32,7 +31,6 @@ class PIDGains:
     def ki(self, val):
         if val >= 0:
             self._ki = val
-            self._ki_list.append(val)
         else:
             logging.warn("ki {} should be >=0".format(val))
             return
@@ -45,10 +43,29 @@ class PIDGains:
     def kd(self, val):
         if val >= 0:
             self._kd = val
-            self._kd_list.append(val)
         else:
             logging.warn("kd {} should be >=0".format(val))
             return
+
+    def updateKpList(self):
+        self._kp_list.append(self.kp)
+
+    def updateKiList(self):
+        self._ki_list.append(self.ki)
+
+    def updateKdList(self):
+        self._kd_list.append(self.kd)
+
+    def updateLists(self):
+        self._kp_list.append(self.kp)
+        self._ki_list.append(self.ki)
+        self._kd_list.append(self.kd)
+
+    def resetLists(self):
+        self._kp_list = []
+        self._ki_list = []
+        self._kd_list = []
+
 
 def getPIDGainsFromCoeff(num=None, dt=0.001):
     """Computes Kp,Ki,Kd of a discrete PID controller from its transfer function's numerator coeff
@@ -77,14 +94,14 @@ def getPIDGainsFromCoeff(num=None, dt=0.001):
     n1=num[1]
     n2=num[2]
 
-    # kd=dt*n2
-    # ki=(n0+n1+n2)/dt
-    # kp=(n0+n1-n2)/2.
+    kd=dt*n2
+    ki=(n0+n1+n2)/dt
+    kp=(n0+n1-n2)/2.
 
     # Ref: last equation (13) in https://www.scilab.org/discrete-time-pid-controller-implementation
-    kp = (n0-n2)/2
-    ki = (n0+n1+n2)/(2.*dt)
-    kd = dt*(n0 - n1 + n2)/8.
+    # kp = (n0-n2)/2
+    # ki = (n0+n1+n2)/(2.*dt)
+    # kd = dt*(n0 - n1 + n2)/8.
 
     return kp,ki,kd
 
@@ -116,14 +133,14 @@ def getPIDCoeffFromGains(kp=None, ki=None, kd=None, dt=0.001):
         return None
 
     # Numerator coeff
-    # n0=kp+ki*dt/2.+kd/dt
-    # n1=-kp+ki*dt/2.-2.*kd/dt
-    # n2=kd/dt
+    n0=kp+ki*dt/2.+kd/dt
+    n1=-kp+ki*dt/2.-2.*kd/dt
+    n2=kd/dt
 
     # Ref: last equation (13) in https://www.scilab.org/discrete-time-pid-controller-implementation
-    n0 = (2*dt*kp + ki*dt**2 + 4*kd) /2./dt
-    n1 = (2*ki*dt**2 - 8*kd) / 2./dt
-    n2 = (ki*dt**2 - 2*dt*kp + 4*kd) /2./dt
+    # n0 = (2*dt*kp + ki*dt**2 + 4*kd) /2./dt
+    # n1 = (2*ki*dt**2 - 8*kd) / 2./dt
+    # n2 = (ki*dt**2 - 2*dt*kp + 4*kd) /2./dt
 
     num=[n0,n1,n2]
 
