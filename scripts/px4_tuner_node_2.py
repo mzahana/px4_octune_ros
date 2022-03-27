@@ -29,10 +29,13 @@ class PX4Tuner:
         self._debug = rospy.get_param('~debug', False)
 
         # Desired duration of collected data samples, seconds
-        self._data_len_sec = rospy.get_param('~data_len_sec', 1.0)
+        self._data_len_sec = rospy.get_param('~data_len_sec', 2.0)
 
         # Sampling/upsampling time, seconds
         self._sampling_dt = rospy.get_param('~sampling_dt', 0.01)
+
+        # PID sampling time
+        self._pid_dt = 1
 
         # Maximum array length, maybe dependent on excitiation time and sampling time?
         self._max_arr_L=int(ceil(self._data_len_sec/self._sampling_dt))
@@ -57,10 +60,11 @@ class PX4Tuner:
         # Optimization objects
         self._roll_rate_optimizer=BackProbOptimizer()
         self._roll_rate_optimizer._debug=False
-        self._roll_rate_optimizer._alpha=0.002
+        self._roll_rate_optimizer._alpha=0.001
         self._roll_rate_optimizer.updateAlphaList()
         self._roll_rate_optimizer._use_optimal_alpha = True # optimize learning rate to gurantee convergence
         self._roll_rate_optimizer._use_adam = False # Use gradient descent
+        self._roll_rate_optimizer._obj_w = 1.0
         # Useful for plotting
         self._roll_rate_init_data = {'r':[], 'u':[], 'y':[]}
         self._roll_rate_final_data = {'r':[], 'u':[], 'y':[]}
@@ -69,10 +73,11 @@ class PX4Tuner:
 
         self._pitch_rate_optimizer=BackProbOptimizer()
         self._pitch_rate_optimizer._debug=False
-        self._pitch_rate_optimizer._alpha=0.002
+        self._pitch_rate_optimizer._alpha=0.001
         self._pitch_rate_optimizer.updateAlphaList()
         self._pitch_rate_optimizer._use_optimal_alpha = True # optimize learning rate to gurantee convergence
         self._pitch_rate_optimizer._use_adam = False # Use gradient descent
+        self._pitch_rate_optimizer._obj_w = 1.0
         # Useful for plotting
         self._pitch_rate_init_data = {'r':[], 'u':[], 'y':[]}
         self._pitch_rate_final_data = {'r':[], 'u':[], 'y':[]}
@@ -229,7 +234,7 @@ class PX4Tuner:
         t_micro = t.to_nsec()/1000
 
         x=msg.controls[0] # roll index
-        y=msg.controls[1] # pitch index
+        y= -1 * msg.controls[1] # pitch index
         z=msg.controls[2] # yaw index
 
         self._data._ang_rate_cnt_output_dict = self._data.insertData(dict=self._data._ang_rate_cnt_output_dict, t=t_micro, x=x, y=y, z=z)
@@ -564,6 +569,7 @@ class PX4Tuner:
             plt.title("Roll rate: Initial response")
             plt.plot(self._roll_rate_init_data['r'], 'r', label='Initial desired reference')
             plt.plot(self._roll_rate_init_data['y'], 'k', label='Initial response')
+            plt.plot(self._roll_rate_init_data['u'], 'b', label='Initial controller output')
             plt.ylabel('rad/s')
             plt.ylim(-3,3)
             plt.legend()
@@ -572,6 +578,7 @@ class PX4Tuner:
             plt.title("Roll rate: Final response")
             plt.plot(self._roll_rate_final_data['r'], 'r', label='Final desired reference')
             plt.plot(self._roll_rate_final_data['y'], 'k', label='Final response')
+            plt.plot(self._roll_rate_final_data['u'], 'b', label='Final controller output')
             plt.ylabel('rad/s')
             plt.ylim(-3,3)
             plt.legend()
@@ -605,6 +612,7 @@ class PX4Tuner:
             plt.title("Pitch rate: Initial response")
             plt.plot(self._pitch_rate_init_data['r'], 'r', label='Initial desired reference')
             plt.plot(self._pitch_rate_init_data['y'], 'k', label='Initial response')
+            plt.plot(self._pitch_rate_init_data['u'], 'b', label='Initial controller output')
             plt.ylabel('rad/s')
             plt.ylim(-3,3)
             plt.legend()
@@ -613,6 +621,7 @@ class PX4Tuner:
             plt.title("Pitch rate: Final response")
             plt.plot(self._pitch_rate_final_data['r'], 'r', label='Final desired reference')
             plt.plot(self._pitch_rate_final_data['y'], 'k', label='Final response')
+            plt.plot(self._pitch_rate_final_data['u'], 'b', label='Final controller output')
             plt.ylabel('rad/s')
             plt.ylim(-3,3)
             plt.legend()
@@ -765,8 +774,9 @@ class PX4Tuner:
         # update roll gains
         self._roll_rate_optimizer.setSignals(r=np.array(self._data._prep_roll_rate_cmd),u=np.array(self._data._prep_roll_cnt_output),y=np.array(self._data._prep_roll_rate))
         # num=utils.getPIDCoeffFromGains(kp=self._roll_rate_pid.kp, ki=self._roll_rate_pid.ki, kd=self._roll_rate_pid.kd, dt=self._sampling_dt)
-        num=utils.getPIDCoeffFromGains(kp=self._roll_rate_pid.kp, ki=self._roll_rate_pid.ki, kd=self._roll_rate_pid.kd, dt=1.0)
-        self._roll_rate_optimizer.setContCoeffs(den_coeff=[1,0,-1], num_coeff=num)
+        num=utils.getPIDCoeffFromGains(kp=self._roll_rate_pid.kp, ki=self._roll_rate_pid.ki, kd=self._roll_rate_pid.kd, dt=self._pid_dt)
+        # self._roll_rate_optimizer.setContCoeffs(den_coeff=[1,0,-1], num_coeff=num)
+        self._roll_rate_optimizer.setContCoeffs(den_coeff=[1,-1], num_coeff=num)
         good =self._roll_rate_optimizer.update(iter=self._current_opt_iteration)
         if not good:
             rospy.logerr("Roll rate optimization was not successful in iteration {}.".format(self._current_opt_iteration))
@@ -774,8 +784,9 @@ class PX4Tuner:
         else: # Good
             # Get new conrtroller coeffs
             den,num=self._roll_rate_optimizer.getNewContCoeff()
+            print("PID den = \n", den)
             # kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=self._sampling_dt) 
-            kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=1.0) 
+            kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=self._pid_dt) 
             # TODO Is the following limiting method safe?
             K=utils.limitPIDGains(P=kp, I=ki, D=kd, kp_min=0.05, kp_max=0.5, ki_min=0.01, ki_max=0.4, kd_min=0.001, kd_max=0.005)
             if K is None:
@@ -795,8 +806,9 @@ class PX4Tuner:
         # update pitch gains
         self._pitch_rate_optimizer.setSignals(r=np.array(self._data._prep_pitch_rate_cmd),u=np.array(self._data._prep_pitch_cnt_output),y=np.array(self._data._prep_pitch_rate))
         # num=utils.getPIDCoeffFromGains(kp=self._pitch_rate_pid.kp, ki=self._pitch_rate_pid.ki, kd=self._pitch_rate_pid.kd, dt=self._sampling_dt)
-        num=utils.getPIDCoeffFromGains(kp=self._pitch_rate_pid.kp, ki=self._pitch_rate_pid.ki, kd=self._pitch_rate_pid.kd, dt=1)
-        self._pitch_rate_optimizer.setContCoeffs(den_coeff=[1,0,-1], num_coeff=num)
+        num=utils.getPIDCoeffFromGains(kp=self._pitch_rate_pid.kp, ki=self._pitch_rate_pid.ki, kd=self._pitch_rate_pid.kd,dt=self._pid_dt)
+        # self._pitch_rate_optimizer.setContCoeffs(den_coeff=[1,0,-1], num_coeff=num)
+        self._pitch_rate_optimizer.setContCoeffs(den_coeff=[1,-1], num_coeff=num)
         good =self._pitch_rate_optimizer.update(iter=self._current_opt_iteration)
         if not good:
             rospy.logerr("Pitch rate optimization was not successful in iteration {}.".format(self._current_opt_iteration))
@@ -805,7 +817,7 @@ class PX4Tuner:
             # Get new conrtroller coeffs
             den,num=self._pitch_rate_optimizer.getNewContCoeff()
             # kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=self._sampling_dt) 
-            kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=1) 
+            kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=self._pid_dt) 
             # TODO Is the following limiting method safe?
             K=utils.limitPIDGains(P=kp, I=ki, D=kd, kp_min=0.05, kp_max=0.6, ki_min=0.01, ki_max=0.4, kd_min=0.001, kd_max=0.005)
             if K is None:
