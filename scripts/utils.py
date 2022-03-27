@@ -67,7 +67,7 @@ class PIDGains:
         self._kd_list = []
 
 
-def getPIDGainsFromCoeff(num=None, dt=0.001):
+def getPIDGainsFromCoeff(num=None, dt=1):
     """Computes Kp,Ki,Kd of a discrete PID controller from its transfer function's numerator coeff
     Numerator is of the form n0*Z^2+n1*Z+n2
 
@@ -94,18 +94,22 @@ def getPIDGainsFromCoeff(num=None, dt=0.001):
     n1=num[1]
     n2=num[2]
 
-    kd=dt*n2
-    ki=(n0+n1+n2)/dt
-    kp=(n0+n1-n2)/2.
+    # kd=dt*n2
+    # ki=(n0+n1+n2)/dt
+    # kp=(n0+n1-n2)/2.
 
     # Ref: last equation (13) in https://www.scilab.org/discrete-time-pid-controller-implementation
     # kp = (n0-n2)/2
     # ki = (n0+n1+n2)/(2.*dt)
     # kd = dt*(n0 - n1 + n2)/8.
 
+    kp = -2*n2 - n1
+    ki = (n0+n1+n2)/dt
+    kd = n2*dt
+
     return kp,ki,kd
 
-def getPIDCoeffFromGains(kp=None, ki=None, kd=None, dt=0.001):
+def getPIDCoeffFromGains(kp=None, ki=None, kd=None, dt=1):
     """Computes transfer function's numerator of a discrete PID from its gains.
     The denominator is constant Z^2+Z+0
     The numnerator is of the form n0*Z^2+n1*Z+n2
@@ -133,14 +137,18 @@ def getPIDCoeffFromGains(kp=None, ki=None, kd=None, dt=0.001):
         return None
 
     # Numerator coeff
-    n0=kp+ki*dt/2.+kd/dt
-    n1=-kp+ki*dt/2.-2.*kd/dt
-    n2=kd/dt
+    # n0=kp + (ki*dt/2.) + (kd/dt)
+    # n1=-kp + (ki*dt/2.) - (2.*kd/dt)
+    # n2=kd/dt
 
     # Ref: last equation (13) in https://www.scilab.org/discrete-time-pid-controller-implementation
     # n0 = (2*dt*kp + ki*dt**2 + 4*kd) /2./dt
     # n1 = (2*ki*dt**2 - 8*kd) / 2./dt
     # n2 = (ki*dt**2 - 2*dt*kp + 4*kd) /2./dt
+
+    n0 = kp + kd/dt + ki*dt
+    n1 = -2*kd/dt - kp
+    n2 = kd/dt
 
     num=[n0,n1,n2]
 
