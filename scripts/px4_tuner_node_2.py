@@ -57,12 +57,15 @@ class PX4Tuner:
         self._vel_xy_pid = utils.PIDGains()
         self._vel_z_pid = utils.PIDGains()
 
+        self._use_optimal_alpha = rospy.get_param('~use_optimal_alpha', True)
+        self._learning_rate = rospy.get_param('~learning_rate', 0.001)
+
         # Optimization objects
         self._roll_rate_optimizer=BackProbOptimizer()
         self._roll_rate_optimizer._debug=False
-        self._roll_rate_optimizer._alpha=0.001
+        self._roll_rate_optimizer._alpha=self._learning_rate
         self._roll_rate_optimizer.updateAlphaList()
-        self._roll_rate_optimizer._use_optimal_alpha = True # optimize learning rate to gurantee convergence
+        self._roll_rate_optimizer._use_optimal_alpha = self._use_optimal_alpha # optimize learning rate to gurantee convergence
         self._roll_rate_optimizer._use_adam = False # Use gradient descent
         self._roll_rate_optimizer._obj_w = 1.0
         # Useful for plotting
@@ -73,9 +76,9 @@ class PX4Tuner:
 
         self._pitch_rate_optimizer=BackProbOptimizer()
         self._pitch_rate_optimizer._debug=False
-        self._pitch_rate_optimizer._alpha=0.001
+        self._pitch_rate_optimizer._alpha=self._learning_rate
         self._pitch_rate_optimizer.updateAlphaList()
-        self._pitch_rate_optimizer._use_optimal_alpha = True # optimize learning rate to gurantee convergence
+        self._pitch_rate_optimizer._use_optimal_alpha = self._use_optimal_alpha # optimize learning rate to gurantee convergence
         self._pitch_rate_optimizer._use_adam = False # Use gradient descent
         self._pitch_rate_optimizer._obj_w = 1.0
         # Useful for plotting
@@ -86,14 +89,14 @@ class PX4Tuner:
 
         self._vel_xy_optimizer=BackProbOptimizer()
         self._vel_xy_optimizer._debug=False
-        self._vel_xy_optimizer._alpha=0.002
-        self._vel_xy_optimizer._use_optimal_alpha = True # optimize learning rate to gurantee convergence
+        self._vel_xy_optimizer._alpha=self._learning_rate
+        self._vel_xy_optimizer._use_optimal_alpha = self._use_optimal_alpha # optimize learning rate to gurantee convergence
         self._vel_xy_optimizer._use_adam = False # Use gradient descent
 
         self._vel_z_optimizer=BackProbOptimizer()
         self._vel_z_optimizer._debug=False
-        self._vel_z_optimizer._alpha=0.002
-        self._vel_z_optimizer._use_optimal_alpha = True # optimize learning rate to gurantee convergence
+        self._vel_z_optimizer._alpha=self._learning_rate
+        self._vel_z_optimizer._use_optimal_alpha = self._use_optimal_alpha # optimize learning rate to gurantee convergence
         self._vel_z_optimizer._use_adam = False # Use gradient descent
 
         # TODO need optimizers for angular and linear positions (Just P controllers )
