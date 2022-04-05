@@ -35,7 +35,7 @@ class PX4Tuner:
         self._sampling_dt = rospy.get_param('~sampling_dt', 0.01)
 
         # PID sampling time
-        self._pid_dt = 1
+        self._pid_dt = rospy.get_param('~pid_dt', 1)
 
         # Maximum array length, maybe dependent on excitiation time and sampling time?
         self._max_arr_L=int(ceil(self._data_len_sec/self._sampling_dt))
@@ -565,22 +565,28 @@ class PX4Tuner:
             return
 
         try:
+            L = len(self._roll_rate_init_data['r'])
+            t = [self._sampling_dt*n for n in range(L)]
             # Roll rate: initial response
             plt.title("Roll rate: Initial response")
-            plt.plot(self._roll_rate_init_data['r'], 'r', label='Initial desired reference')
-            plt.plot(self._roll_rate_init_data['y'], 'k', label='Initial response')
-            plt.plot(self._roll_rate_init_data['u'], 'b', label='Initial controller output')
+            plt.plot(t,self._roll_rate_init_data['r'], 'r', label='Initial desired reference')
+            plt.plot(t,self._roll_rate_init_data['y'], 'k', label='Initial response')
+            plt.plot(t,self._roll_rate_init_data['u'], 'b', label='Initial controller output')
             plt.ylabel('rad/s')
+            plt.xlabel('Seconds')
             plt.ylim(-3,3)
             plt.legend()
             plt.show()
 
+            L = len(self._roll_rate_final_data['r'])
+            t = [self._sampling_dt*n for n in range(L)]
             plt.title("Roll rate: Final response")
-            plt.plot(self._roll_rate_final_data['r'], 'r', label='Final desired reference')
-            plt.plot(self._roll_rate_final_data['y'], 'k', label='Final response')
-            plt.plot(self._roll_rate_final_data['u'], 'b', label='Final controller output')
+            plt.plot(t, self._roll_rate_final_data['r'], 'r', label='Final desired reference')
+            plt.plot(t, self._roll_rate_final_data['y'], 'k', label='Final response')
+            plt.plot(t, self._roll_rate_final_data['u'], 'b', label='Final controller output')
             plt.ylabel('rad/s')
             plt.ylim(-3,3)
+            plt.xlabel('Seconds')
             plt.legend()
             plt.show()
 
@@ -608,22 +614,28 @@ class PX4Tuner:
             plt.show()
 
             # ----------------------------------- #
+            L = len(self._pitch_rate_init_data['r'])
+            t = [self._sampling_dt*n for n in range(L)]
             # Pitch rate: initial response
             plt.title("Pitch rate: Initial response")
-            plt.plot(self._pitch_rate_init_data['r'], 'r', label='Initial desired reference')
-            plt.plot(self._pitch_rate_init_data['y'], 'k', label='Initial response')
-            plt.plot(self._pitch_rate_init_data['u'], 'b', label='Initial controller output')
+            plt.plot(t, self._pitch_rate_init_data['r'], 'r', label='Initial desired reference')
+            plt.plot(t, self._pitch_rate_init_data['y'], 'k', label='Initial response')
+            plt.plot(t, self._pitch_rate_init_data['u'], 'b', label='Initial controller output')
             plt.ylabel('rad/s')
             plt.ylim(-3,3)
+            plt.xlabel('Seconds')
             plt.legend()
             plt.show()
 
+            L = len(self._pitch_rate_final_data['r'])
+            t = [self._sampling_dt*n for n in range(L)]
             plt.title("Pitch rate: Final response")
-            plt.plot(self._pitch_rate_final_data['r'], 'r', label='Final desired reference')
-            plt.plot(self._pitch_rate_final_data['y'], 'k', label='Final response')
-            plt.plot(self._pitch_rate_final_data['u'], 'b', label='Final controller output')
+            plt.plot(t, self._pitch_rate_final_data['r'], 'r', label='Final desired reference')
+            plt.plot(t, self._pitch_rate_final_data['y'], 'k', label='Final response')
+            plt.plot(t, self._pitch_rate_final_data['u'], 'b', label='Final controller output')
             plt.ylabel('rad/s')
             plt.ylim(-3,3)
+            plt.xlabel('Seconds')
             plt.legend()
             plt.show()
 
