@@ -28,6 +28,9 @@ class PX4Tuner:
         # Print debug messages
         self._debug = rospy.get_param('~debug', False)
 
+        # Flight mode. Used to select which MAVROS topic to use to store commanded angular rates
+        self._flight_mode = None
+
         # Desired duration of collected data samples, seconds
         self._data_len_sec = rospy.get_param('~data_len_sec', 2.0)
 
@@ -129,8 +132,13 @@ class PX4Tuner:
         self._pitch_rate_pub = rospy.Publisher("pitch_rate/tuning_state", TuningState, queue_size=10)
 
         # ----------------------------------- Subscribers -------------------------- #
+        # MAVROS state. This is needed to store commanded rates from mavros topics based on the flight mode
+        rospy.Subscriber("mavros/state",State, self.mavrosStateCb)
         # Commanded attitude and attitude rates
         rospy.Subscriber("mavros/setpoint_raw/target_attitude",AttitudeTarget, self.cmdAttCb)
+        # Used during OFFBOARD MODE when attitude rates are directly commanded from an offboard controller (e.g. geometric controller)
+        rospy.Subscriber("mavros/setpoint_raw/attitude",AttitudeTarget, self.cmdAttCb2)
+        
         # Commanded angular rates
         rospy.Subscriber("mavros/target_actuator_control",ActuatorControl, self.ratesPIDOutputCb)
         # Commanded position/velocity/acceleration
@@ -178,6 +186,14 @@ class PX4Tuner:
 
         return []
 
+    def mavrosStateCb(self, msg):
+        """MAVROS state. Used to check flight mode
+        """
+        if msg is None:
+            return
+        self._flight_mode = msg.mode
+        
+
     def cmdPosCb(self, msg):
         """Commanded position callback
         """
@@ -189,6 +205,52 @@ class PX4Tuner:
         """Callback of commanded attitude, and attitude rates
         """
         if msg is None:
+            return
+
+        if self._flight_mode == "OFFBOARD":
+            # Use the other topic mavros/setpoint_raw/attitude
+            return
+
+        if not self._insert_data:
+            return
+
+        t = rospy.Time(secs=msg.header.stamp.secs, nsecs=msg.header.stamp.nsecs)
+        t_micro = t.to_nsec()/1000
+
+        # Commanded attitude
+        q = (
+            msg.orientation.x,
+            msg.orientation.y,
+            msg.orientation.z,
+            msg.orientation.w)
+        # euler = tf.transformations.euler_from_quaternion(q, 'rzyx') #yaw/pitch/roll
+        euler = tf.transformations.euler_from_quaternion(q)
+        roll_x=euler[2]
+        pitch_y=euler[1]
+        yaw_z=euler[0]
+
+        self._data._cmd_att_dict = self._data.insertData(dict=self._data._cmd_att_dict, t=t_micro, x=roll_x, y=pitch_y, z=yaw_z)
+            # if self._debug:
+            #     rospy.loginfo_throttle(1, "_cmd_att_dict length is: %s",len(self._cmd_att_dict['time']))
+
+        # Commanded angular rates
+        x = msg.body_rate.x # commanded roll rate
+        y = msg.body_rate.y # commanded pitch rate
+        z = msg.body_rate.z # commanded yaw rate
+
+        
+        self._data._cmd_att_rate_dict = self._data.insertData(dict=self._data._cmd_att_rate_dict, t=t_micro, x=x, y=y, z=z)
+            # if self._debug:
+            #     rospy.loginfo_throttle(1, "cmd_att_rate_dict length is: %s",len(self._cmd_att_rate_dict['time']))
+
+    def cmdAttCb2(self, msg):
+        """Callback of commanded attitude, and attitude rates
+        """
+        if msg is None:
+            return
+
+        if self._flight_mode != "OFFBOARD":
+            # Use the other topic mavros/setpoint_raw/attitude
             return
 
         if not self._insert_data:
@@ -731,8 +793,9 @@ class PX4Tuner:
             self._insert_data = True
 
         now = time.time()
-        if ( (now - self._data_buffering_start_t) > self._data_buffering_timeout):
-            rospy.logerr("Data buffering timedout. Aborting tuning process")
+        dt=now - self._data_buffering_start_t
+        if ( dt > self._data_buffering_timeout):
+            rospy.logerr("Data buffering timedout dt= %s > %s. Aborting tuning process", dt, self._data_buffering_timeout)
             self.stopTuning()
             return
 
