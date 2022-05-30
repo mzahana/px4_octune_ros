@@ -1,0 +1,17 @@
+<launch>
+    <!-- Example launch file to run OCTUNE on actual drone tunning the PX4 autopilot  -->
+
+    <include if="$(env RUN_MAVROS)" file="$(find mavros)/launch/px4.launch">
+        <arg name="fcu_url" value="$(env FCU_URL)"/>
+        <arg name="tgt_system" value="$(optenv MAVLINK_ID 1)"/>
+    </include>
+
+    <!--
+        px4_octune_node
+    -->
+    <include if="$(env RUN_OCTUNE)" file="$(find px4_octune_ros)/launch/start_tuner.launch">
+        <arg name="debug" value="True"/>
+        <arg name="tuning_params" value="$(env OCTUNE_PARAMS_YAML)"/>
+    </include>
+
+</launch>
