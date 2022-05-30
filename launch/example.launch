@@ -1,4 +1,7 @@
 <launch>
+    <!-- 
+        A full example of a quadcopter simulation with OCTUNE tuner
+     -->
 
     <arg name="run_offb_controller" default="false"/>
 

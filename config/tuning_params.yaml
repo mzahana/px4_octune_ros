@@ -1,0 +1,29 @@
+# Print debug messages
+debug: False
+
+# Desired duration of collected data samples, seconds
+data_len_sec: 2.0
+
+# Sampling/upsampling time of raw data, seconds
+sampling_dt: 0.01
+
+# PID sampling time, keep 1 for now
+pid_dt: 1.0
+
+# Maximum number of optimization iterations
+opt_max_iter: 1000
+
+# Maximum optimization time, seconds
+opt_max_time: 60.0
+
+# Maximum number of optimization failures before giving up
+# This includes differetn type of failures, e.g. failing to get/set PID gain, failing the optimization iteration, ..etc
+opt_max_failures: 10
+
+# Optimize learning rate to gurantee convergence
+# If False, learning rate is used. If True learning rate will be computed from data
+# Recommended to set it True to avoid divergence
+use_optimal_alpha: True
+
+# Learning rate
+learning_rate: 0.001

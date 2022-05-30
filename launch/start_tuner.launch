@@ -1,6 +1,8 @@
 <launch>
     <arg name="debug" default="False"/>
-    <node pkg="px4_octune_ros" type="px4_tuner_node.py" name="px4_tuner_node" output="screen" >
-        <param name="debug" value="$(arg debug)"/>
+    <arg name="tuning_params" default="$(find px4_octune_ros)/config/tuning_params.yaml"/>
+    <node pkg="px4_octune_ros" type="px4_tuner_node_2.py" name="px4_tuner_node" output="screen" >
+        <!-- <param name="debug" value="$(arg debug)"/> -->
+        <rosparam command="load" file="$(arg tuning_params)"/>
     </node>
 </launch>
