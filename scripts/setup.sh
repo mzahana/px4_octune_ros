@@ -61,7 +61,7 @@ fi
 
 pip install numpy==1.13.3 --user
 pip install matplotlib==2.2.5 --user
-pip install scipy=1.2.3 --user
+pip install scipy==1.2.3 --user
 pip install pandas --user
 
 # Install octune
