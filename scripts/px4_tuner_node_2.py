@@ -2,7 +2,7 @@
 
 import time
 import rospy
-from mavros_msgs.msg import AttitudeTarget, ActuatorControl, PositionTarget, State, ExtendedState, RCIn
+from mavros_msgs.msg import AttitudeTarget, ActuatorControl, PositionTarget, State, ExtendedState, RCIn, PlayTuneV2
 from mavros_msgs.srv import MessageInterval, MessageIntervalRequest, MessageIntervalResponse
 from mavros_msgs.srv import ParamGet, ParamGetRequest, ParamGetResponse, ParamSet, ParamSetRequest, ParamSetResponse
 from mavros_msgs.srv import CommandBool, SetMode
@@ -137,10 +137,18 @@ class PX4Tuner:
         # The desired value of the msg.channel[self._rc_channel] to do the PID reset
         self._desired_sw_state =  rospy.get_param('~desired_sw_state', 1)
 
+        # Tones
+        # Ref: https://github.com/PX4/PX4-Autopilot/blob/master/src/lib/tunes/tune_definition.desc
+        self._start_tone_str=rospy.get_param('~start_tone_str', 'MFT100e8b8b')
+        self._stop_tone_str=rospy.get_param('~stop_tone_str', 'MFT100e8b8a')
+        self._error_tone_str=rospy.get_param('~error_tone_str', 'MBT200a8a8a8PaaaP')
+        self._ok_tone_str=rospy.get_param('~error_tone_str', 'MFT200e8a8a')
+
 
         # ----------------------------------- Publishers -------------------------- #
         self._roll_rate_pub = rospy.Publisher("roll_rate/tuning_state", TuningState, queue_size=10)
         self._pitch_rate_pub = rospy.Publisher("pitch_rate/tuning_state", TuningState, queue_size=10)
+        self._tone_pub=rospy.Publisher('mavros/play_tune', PlayTuneV2, queue_size=5)
 
         # ----------------------------------- Subscribers -------------------------- #
         # MAVROS state. This is needed to store commanded rates from mavros topics based on the flight mode
@@ -191,7 +199,7 @@ class PX4Tuner:
         if (self._rc_channel > len(msg.channels)-1):
             rospy.logerr("[rcinCb] Requested RC channel %s is out of range number of available channels = %s", self._rc_channel, len(msg.channels))
             return
-            
+
         # Get current switch state
         sw_state = msg.channels[self._rc_channel]
         
@@ -407,14 +415,38 @@ class PX4Tuner:
         good = self.setRatePIDGains(axis="ROLL", kP=self._default_roll_gains['P'], kI=self._default_roll_gains['I'], kD=self._default_roll_gains['D'])
         if (good):
             rospy.loginfo("[resetPIDGains] Roll rate PID gains are reset")
+            # Play OK tone
+            msg = PlayTuneV2()
+            msg.format=1
+            msg.tune=self._ok_tone_str
+            self._tone_pub.publish(msg)
         else:
             rospy.logwarn("[resetPIDGains] Failed to reset Roll rate PID gains")
+            # Play error tone
+            msg = PlayTuneV2()
+            msg.format=1
+            msg.tune=self._error_tone_str
+            self._tone_pub.publish(msg)
+            return
+
+        time.sleep(0.5) # let the commands sink
 
         good = self.setRatePIDGains(axis="PITCH", kP=self._default_pitch_gains['P'], kI=self._default_pitch_gains['I'], kD=self._default_pitch_gains['D'])
         if (good):
             rospy.loginfo("[resetPIDGains] Pitch rate PID gains are reset")
+            # Play OK tone
+            msg = PlayTuneV2()
+            msg.format=1
+            msg.tune=self._ok_tone_str
+            self._tone_pub.publish(msg)
         else:
             rospy.logwarn("[resetPIDGains] Failed to reset Pitch rate PID gains")
+            # Play error tone
+            msg = PlayTuneV2()
+            msg.format=1
+            msg.tune=self._error_tone_str
+            self._tone_pub.publish(msg)
+            return
 
     def startTuning(self):
         """Starts the tuning process"""
@@ -427,6 +459,12 @@ class PX4Tuner:
             self._insert_data = True
             rospy.loginfo("Tuning is started")
 
+            # Play start tone
+            msg = PlayTuneV2()
+            msg.format=1
+            msg.tune=self._start_tone_str
+            self._tone_pub.publish(msg)
+
     def stopTuning(self):
         """Stops the tuning process"""
         self.resetStates()
@@ -438,6 +476,12 @@ class PX4Tuner:
         self.IDLE_STATE=True
     
         rospy.loginfo("Tuning is stopped")
+
+        # Play stop/end tone
+        msg = PlayTuneV2()
+        msg.format=1
+        msg.tune=self._stop_tone_str
+        self._tone_pub.publish(msg)
 
     def increaseStreamRates(self):
         """Requests from PX4 an increase in stream rates of commanded/feedback signals

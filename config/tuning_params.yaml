@@ -43,3 +43,10 @@ pitch_default_gains:
   P: 0.15
   I: 0.2
   D: 0.003
+
+# Tones
+# Ref: https://github.com/PX4/PX4-Autopilot/blob/master/src/lib/tunes/tune_definition.desc
+start_tone_str: 'MFT100e8b8b'
+stop_tone_str: 'MFT100e8b8a'
+error_tone_str: 'MBT200a8a8a8PaaaP'
+error_tone_str: 'MFT200e8a8a'
