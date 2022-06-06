@@ -27,3 +27,19 @@ use_optimal_alpha: True
 
 # Learning rate
 learning_rate: 0.001
+
+# Channel ID of the RC switch in /mavroc/rc/in, starts from 0
+rc_channel: 0
+
+# The desired value of the msg.channel[rc_channel] to do the PID reset
+desired_sw_state: 1
+
+roll_default_gains:
+  P: 0.15
+  I: 0.2
+  D: 0.003
+
+pitch_default_gains:
+  P: 0.15
+  I: 0.2
+  D: 0.003

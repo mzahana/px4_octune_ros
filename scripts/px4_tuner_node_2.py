@@ -2,7 +2,7 @@
 
 import time
 import rospy
-from mavros_msgs.msg import AttitudeTarget, ActuatorControl, PositionTarget, State, ExtendedState
+from mavros_msgs.msg import AttitudeTarget, ActuatorControl, PositionTarget, State, ExtendedState, RCIn
 from mavros_msgs.srv import MessageInterval, MessageIntervalRequest, MessageIntervalResponse
 from mavros_msgs.srv import ParamGet, ParamGetRequest, ParamGetResponse, ParamSet, ParamSetRequest, ParamSetResponse
 from mavros_msgs.srv import CommandBool, SetMode
@@ -59,6 +59,10 @@ class PX4Tuner:
         self._pitch_rate_pid = utils.PIDGains()
         self._vel_xy_pid = utils.PIDGains()
         self._vel_z_pid = utils.PIDGains()
+
+        # Default gains, for failsafe action
+        self._default_roll_gains = rospy.get_param('~roll_default_gains', {'P': 0.15, 'I': 0.2, 'D': 0.003})
+        self._default_pitch_gains = rospy.get_param('~pitch_default_gains', {'P': 0.15, 'I': 0.2, 'D': 0.003})
 
         self._use_optimal_alpha = rospy.get_param('~use_optimal_alpha', True)
         self._learning_rate = rospy.get_param('~learning_rate', 0.001)
@@ -126,6 +130,13 @@ class PX4Tuner:
         self.GET_DATA_STATE = False
         self.OPTIMIZATION_STATE = False
 
+        # RC switch variables
+        # Channel ID, starts from 0
+        self._rc_channel = rospy.get_param('~rc_channel', 7)
+        self._last_sw_state = 0
+        # The desired value of the msg.channel[self._rc_channel] to do the PID reset
+        self._desired_sw_state =  rospy.get_param('~desired_sw_state', 1)
+
 
         # ----------------------------------- Publishers -------------------------- #
         self._roll_rate_pub = rospy.Publisher("roll_rate/tuning_state", TuningState, queue_size=10)
@@ -152,6 +163,10 @@ class PX4Tuner:
         rospy.Subscriber("mavros/local_position/pose", PoseStamped, self.poseCb)
         # Feedback, local velocity
         rospy.Subscriber("mavros/local_position/velocity_local", TwistStamped, self.velCb)
+        
+        # Subscriber to the RC control input to reset PID gains using a swtich (for backup)
+        rospy.Subscriber("mavros/rc/in", RCIn, self.rcinCb)
+        
 
         # ----------------------------------- Timers -------------------------- #
     
@@ -171,6 +186,21 @@ class PX4Tuner:
             exit()
 
     # ---------------------------- Callbacks ----------------------------#
+    def rcinCb(self, msg):
+        """Resets PID gains to predefined (good) values upon change of RC control switch"""
+        if (self._rc_channel > len(msg.channels)-1):
+            rospy.logerr("[rcinCb] Requested RC channel %s is out of range number of available channels = %s", self._rc_channel, len(msg.channels))
+            return
+            
+        # Get current switch state
+        sw_state = msg.channels[self._rc_channel]
+        
+        # only act if switch state is changed and is equal to the desired state self._desired_sw_state (-1,0,1)
+        if (sw_state != self._last_sw_state):
+            self._last_sw_state = sw_state
+            if(sw_state == self._desired_sw_state):
+                self.resetPIDGains()
+
     def startTuningSrv(self, req):
         self.startTuning()
 
@@ -371,6 +401,20 @@ class PX4Tuner:
         # TODO
 
     # ------------------------------------- Functions -------------------------------------#
+
+    def resetPIDGains(self):
+        """This is a failsafe function. Resets the PID gains of all loops to predefined (good) values"""
+        good = self.setRatePIDGains(axis="ROLL", kP=self._default_roll_gains['P'], kI=self._default_roll_gains['I'], kD=self._default_roll_gains['D'])
+        if (good):
+            rospy.loginfo("[resetPIDGains] Roll rate PID gains are reset")
+        else:
+            rospy.logwarn("[resetPIDGains] Failed to reset Roll rate PID gains")
+
+        good = self.setRatePIDGains(axis="PITCH", kP=self._default_pitch_gains['P'], kI=self._default_pitch_gains['I'], kD=self._default_pitch_gains['D'])
+        if (good):
+            rospy.loginfo("[resetPIDGains] Pitch rate PID gains are reset")
+        else:
+            rospy.logwarn("[resetPIDGains] Failed to reset Pitch rate PID gains")
 
     def startTuning(self):
         """Starts the tuning process"""
