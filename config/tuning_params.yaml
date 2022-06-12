@@ -29,10 +29,13 @@ use_optimal_alpha: True
 learning_rate: 0.001
 
 # Channel ID of the RC switch in /mavroc/rc/in, starts from 0
-rc_channel: 0
-
+reset_rc_channel: 7
 # The desired value of the msg.channel[rc_channel] to do the PID reset
-desired_sw_state: 1
+desired_reset_sw_state: 2006
+
+# Start tuning using this RC channel, ID starts from 0. So 8 means channel 9
+tuning_rc_channel: 0
+desired_tuning_sw_state: 2006
 
 roll_default_gains:
   P: 0.15

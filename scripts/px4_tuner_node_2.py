@@ -31,6 +31,9 @@ class PX4Tuner:
         # Flight mode. Used to select which MAVROS topic to use to store commanded angular rates
         self._flight_mode = None
 
+        # FCU connection flag. Tuning only start if this flag is true
+        self._fcu_connected = False
+
         # Desired duration of collected data samples, seconds
         self._data_len_sec = rospy.get_param('~data_len_sec', 2.0)
 
@@ -132,10 +135,16 @@ class PX4Tuner:
 
         # RC switch variables
         # Channel ID, starts from 0
-        self._rc_channel = rospy.get_param('~rc_channel', 7)
-        self._last_sw_state = 0
+        self._reset_rc_channel = rospy.get_param('~reset_rc_channel', 7)
+        self._last_reset_sw_state = 0
         # The desired value of the msg.channel[self._rc_channel] to do the PID reset
-        self._desired_sw_state =  rospy.get_param('~desired_sw_state', 1)
+        self._desired_reset_sw_state =  rospy.get_param('~desired_reset_sw_state', 2006)
+
+        # tuning switch
+        self._tuning_rc_channel = rospy.get_param('~tuning_rc_channel', 7)
+        # If at this switch pwm value, start tuning. Otherwise, stop tuning
+        self._desired_tuning_sw_state =  rospy.get_param('~desired_tuning_sw_state', 2006)
+        self._last_tuning_sw_state = 0
 
         # Tones
         # Ref: https://github.com/PX4/PX4-Autopilot/blob/master/src/lib/tunes/tune_definition.desc
@@ -196,19 +205,33 @@ class PX4Tuner:
     # ---------------------------- Callbacks ----------------------------#
     def rcinCb(self, msg):
         """Resets PID gains to predefined (good) values upon change of RC control switch. This is a failsafe action"""
-        if (self._rc_channel > len(msg.channels)-1):
-            rospy.logerr("[rcinCb] Requested RC channel %s is out of range number of available channels = %s", self._rc_channel, len(msg.channels))
-            return
-
-        # Get current switch state
-        sw_state = msg.channels[self._rc_channel]
         
-        # only act if switch state is changed and is equal to the desired state self._desired_sw_state (-1,0,1)
-        if (sw_state != self._last_sw_state):
-            self._last_sw_state = sw_state
-            if(sw_state == self._desired_sw_state):
-                self.stopTuning()
-                self.resetPIDGains()
+        if (len(msg.channels)-1 >= self._reset_rc_channel):
+            # Get current switch state
+            reset_sw_state = msg.channels[self._reset_rc_channel]
+            
+            # only act if switch state is changed and is equal to the desired state self._desired_reset_sw_state 
+            if (reset_sw_state != self._last_reset_sw_state):
+                self._last_reset_sw_state = reset_sw_state
+                if(reset_sw_state == self._desired_reset_sw_state):
+                    self.stopTuning()
+                    self.resetPIDGains()
+        else: 
+            rospy.logerr("[rcinCb] Requested reset RC channel %s is out of range number of available channels = %s", self._reset_rc_channel, len(msg.channels))
+
+        if (len(msg.channels)-1 >= self._tuning_rc_channel):
+            # start/stop tuning
+            tuning_sw_state = msg.channels[self._tuning_rc_channel]
+            if (tuning_sw_state != self._last_tuning_sw_state):
+                self._last_tuning_sw_state = tuning_sw_state
+                if (tuning_sw_state == self._desired_tuning_sw_state):
+                    rospy.logwarn("[rcinCb] Tuning is started through RC input using channel %s", self._tuning_rc_channel+1)
+                    self.startTuning()
+                else:
+                    rospy.logwarn("[rcinCb] Tuning is stopped through RC input using channel %s", self._tuning_rc_channel+1)
+                    self.stopTuning()
+        else: 
+            rospy.logerr("[rcinCb] Requested tuning RC channel %s is out of range number of available channels = %s", self._tuning_rc_channel, len(msg.channels))
 
     def startTuningSrv(self, req):
         self.startTuning()
@@ -231,6 +254,7 @@ class PX4Tuner:
         if msg is None:
             return
         self._flight_mode = msg.mode
+        self._fcu_connected = msg.connected
         
 
     def cmdPosCb(self, msg):
@@ -451,6 +475,16 @@ class PX4Tuner:
 
     def startTuning(self):
         """Starts the tuning process"""
+
+        if not self._fcu_connected:
+            rospy.logerr("[startTuning] No FCU connection")
+            # Play start tone
+            msg = PlayTuneV2()
+            msg.format=1
+            msg.tune=self._error_tone_str
+            self._tone_pub.publish(msg)
+            return
+
         if self._is_tuning_running:
             rospy.logwarn("Tuning is already in progress")
         else:
@@ -550,6 +584,10 @@ class PX4Tuner:
         axis_rate_ki = None
         axis_rate_kd = None
 
+        if not self._fcu_connected:
+            rospy.logerr("[getRatePIDGains] No FCU connection.")
+            return axis_rate_kp, axis_rate_ki, axis_rate_kd
+
         if axis is None:
             rospy.logerr("Axis is not set;  axis=%s", axis)
             return axis_rate_kp, axis_rate_ki, axis_rate_kd
@@ -618,6 +656,10 @@ class PX4Tuner:
 
         if kP is None or kI is None or kD is None:
             rospy.logerr("One of the gains is None")
+            return False
+
+        if not self._fcu_connected:
+            rospy.logerr("[setRatePIDGains] FCU is not connected.")
             return False
 
         if axis=='ROLL' or axis=='PITCH' or axis=='YAW':
