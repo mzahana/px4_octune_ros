@@ -195,7 +195,7 @@ class PX4Tuner:
 
     # ---------------------------- Callbacks ----------------------------#
     def rcinCb(self, msg):
-        """Resets PID gains to predefined (good) values upon change of RC control switch"""
+        """Resets PID gains to predefined (good) values upon change of RC control switch. This is a failsafe action"""
         if (self._rc_channel > len(msg.channels)-1):
             rospy.logerr("[rcinCb] Requested RC channel %s is out of range number of available channels = %s", self._rc_channel, len(msg.channels))
             return
@@ -207,6 +207,7 @@ class PX4Tuner:
         if (sw_state != self._last_sw_state):
             self._last_sw_state = sw_state
             if(sw_state == self._desired_sw_state):
+                self.stopTuning()
                 self.resetPIDGains()
 
     def startTuningSrv(self, req):
