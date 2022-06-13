@@ -214,8 +214,9 @@ class PX4Tuner:
             if (reset_sw_state != self._last_reset_sw_state):
                 self._last_reset_sw_state = reset_sw_state
                 if(reset_sw_state == self._desired_reset_sw_state):
-                    self.stopTuning()
-                    self.resetPIDGains()
+                    if self._is_tuning_running:
+                        self.stopTuning()
+                        self.resetPIDGains()
         else: 
             rospy.logerr("[rcinCb] Requested reset RC channel %s is out of range number of available channels = %s", self._reset_rc_channel, len(msg.channels))
 
@@ -229,7 +230,8 @@ class PX4Tuner:
                     self.startTuning()
                 else:
                     rospy.logwarn("[rcinCb] Tuning is stopped through RC input using channel %s", self._tuning_rc_channel+1)
-                    self.stopTuning()
+                    if self._is_tuning_running:
+                        self.stopTuning()
         else: 
             rospy.logerr("[rcinCb] Requested tuning RC channel %s is out of range number of available channels = %s", self._tuning_rc_channel, len(msg.channels))
 
