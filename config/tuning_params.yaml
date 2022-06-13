@@ -1,6 +1,12 @@
 # Print debug messages
 debug: False
 
+plot_save_path: '/home/arrow/shared_volume/octune_plots'
+
+# Flag to save plots automatically after optimization is done
+# If True, Plots will be saved in plot_save_path
+save_plots: True
+
 # Desired duration of collected data samples, seconds
 data_len_sec: 2.0
 

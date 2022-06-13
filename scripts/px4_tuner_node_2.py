@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 
+import os
 import time
 import rospy
 from mavros_msgs.msg import AttitudeTarget, ActuatorControl, PositionTarget, State, ExtendedState, RCIn, PlayTuneV2
@@ -17,6 +18,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import tf
 import numpy as np
+from datetime import datetime
 
 from px4_octune_ros.msg import TuningState
 
@@ -30,6 +32,12 @@ class PX4Tuner:
 
         # Flight mode. Used to select which MAVROS topic to use to store commanded angular rates
         self._flight_mode = None
+
+        # Save plots path
+        self._plot_save_path = rospy.get_param('~plot_save_path', '~/')
+
+        # Flag to save plots automatically after optimization is done
+        self._save_plots = rospy.get_param('~save_plots', False)
 
         # FCU connection flag. Tuning only start if this flag is true
         self._fcu_connected = False
@@ -195,6 +203,8 @@ class PX4Tuner:
         rospy.Service('px4_octune/stop_tune', Empty, self.stopTuningSrv)
         # Plot service
         rospy.Service('px4_octune/plot', Empty, self.plotSrv)
+        # Save plots service
+        rospy.Service('px4_octune/save_plot', Empty, self.savePlotSrv)
 
         # Request higher data streams
         ret = self.increaseStreamRates()
@@ -231,6 +241,8 @@ class PX4Tuner:
                     if self._is_tuning_running:
                         rospy.logwarn("[rcinCb] Tuning is stopped through RC input using channel %s", self._tuning_rc_channel+1)
                         self.stopTuning()
+                        if self._save_plots:
+                            self.savePlots()
         else: 
             rospy.logerr("[rcinCb] Requested tuning RC channel %s is out of range number of available channels = %s", self._tuning_rc_channel, len(msg.channels))
 
@@ -247,6 +259,10 @@ class PX4Tuner:
     def plotSrv(self, req):
         self.plotData()
 
+        return []
+
+    def savePlotSrv(self, req):
+        self.savePlots()
         return []
 
     def mavrosStateCb(self, msg):
@@ -861,6 +877,134 @@ class PX4Tuner:
         except:
             rospy.logerr("Error in plotData")
 
+    def savePlots(self):
+        """
+        Saves data plots to predefined files on the disk
+        """
+        if self._is_tuning_running:
+            rospy.logerr("Tuning is still running. Stop tuning first.")
+            return
+
+        t = datetime.now()
+        dir_name= str(t.date())+'_'+str(t.hour)+'-'+str(t.minute)+'-'+str(t.second)
+        try:
+            path = os.path.join(self._plot_save_path, dir_name)
+            os.makedirs(path)
+            rospy.loginfo("Creataed plot directory %s", path)
+        except Exception as e:
+            rospy.logerr("Could not create directory %s. Error: %s", path, e)
+            return
+
+        try:
+            L = len(self._roll_rate_init_data['r'])
+            t = [self._sampling_dt*n for n in range(L)]
+            # Roll rate: initial response
+            plt.title("Roll rate: Initial response")
+            plt.plot(t,self._roll_rate_init_data['r'], 'r', label='Initial desired reference')
+            plt.plot(t,self._roll_rate_init_data['y'], 'k', label='Initial response')
+            plt.plot(t,self._roll_rate_init_data['u'], 'b', label='Initial controller output')
+            plt.ylabel('rad/s')
+            plt.xlabel('Seconds')
+            plt.ylim(-3,3)
+            plt.legend()
+            plt.savefig(path+'/roll_rate_init_response.png')
+            plt.clf()
+
+            L = len(self._roll_rate_final_data['r'])
+            t = [self._sampling_dt*n for n in range(L)]
+            plt.title("Roll rate: Final response")
+            plt.plot(t, self._roll_rate_final_data['r'], 'r', label='Final desired reference')
+            plt.plot(t, self._roll_rate_final_data['y'], 'k', label='Final response')
+            plt.plot(t, self._roll_rate_final_data['u'], 'b', label='Final controller output')
+            plt.ylabel('rad/s')
+            plt.ylim(-3,3)
+            plt.xlabel('Seconds')
+            plt.legend()
+            plt.savefig(path+'/roll_rate_final_response.png')
+            plt.clf()
+
+            # Roll rate:  Learning rate vs. optimization iterations
+            plt.title("Roll rate: Learning rate vs. iteration")
+            plt.plot(self._roll_rate_optimizer._alpha_list, 'k', label='Learning rate')
+            plt.xlabel('Iteration')
+            plt.legend()
+            plt.savefig(path+'/roll_rate_learning_rate.png')
+            plt.clf()
+
+            # Roll rate:  Performance vs. optimization iterations
+            plt.title("Roll rate: Performance vs. iteration")
+            plt.plot(self._roll_rate_optimizer._performance_list, 'k', label='Performance')
+            plt.xlabel('Iteration')
+            plt.legend()
+            plt.savefig(path+'/roll_rate_performance.png')
+            plt.clf()
+
+            # Roll rate:  PID gains vs. iteration
+            plt.title("Roll rate: PID gains vs. iteration")
+            plt.plot(self._roll_rate_pid._kp_list, 'k', label='kp')
+            plt.plot(self._roll_rate_pid._ki_list, 'r', label='ki')
+            plt.plot(self._roll_rate_pid._kd_list, 'b', label='kd')
+            plt.xlabel('Iteration')
+            plt.legend()
+            plt.savefig(path+'/roll_rate_pid_gains.png')
+            plt.clf()
+
+            # ----------------------------------- #
+            L = len(self._pitch_rate_init_data['r'])
+            t = [self._sampling_dt*n for n in range(L)]
+            # Pitch rate: initial response
+            plt.title("Pitch rate: Initial response")
+            plt.plot(t, self._pitch_rate_init_data['r'], 'r', label='Initial desired reference')
+            plt.plot(t, self._pitch_rate_init_data['y'], 'k', label='Initial response')
+            plt.plot(t, self._pitch_rate_init_data['u'], 'b', label='Initial controller output')
+            plt.ylabel('rad/s')
+            plt.ylim(-3,3)
+            plt.xlabel('Seconds')
+            plt.legend()
+            plt.savefig(path+'/pitch_rate_init_response.png')
+            plt.clf()
+
+            L = len(self._pitch_rate_final_data['r'])
+            t = [self._sampling_dt*n for n in range(L)]
+            plt.title("Pitch rate: Final response")
+            plt.plot(t, self._pitch_rate_final_data['r'], 'r', label='Final desired reference')
+            plt.plot(t, self._pitch_rate_final_data['y'], 'k', label='Final response')
+            plt.plot(t, self._pitch_rate_final_data['u'], 'b', label='Final controller output')
+            plt.ylabel('rad/s')
+            plt.ylim(-3,3)
+            plt.xlabel('Seconds')
+            plt.legend()
+            plt.savefig(path+'/pitch_rate_final_response.png')
+            plt.clf()
+
+            # Pitch rate:  Learning rate vs. optimization iterations
+            plt.title("Pitch rate: Learning rate vs. iteration")
+            plt.plot(self._pitch_rate_optimizer._alpha_list, 'k', label='Learning rate')
+            plt.xlabel('Iteration')
+            plt.legend()
+            plt.savefig(path+'/pitch_rate_learning_rate.png')
+            plt.clf()
+
+            # Pitch rate:  Performance vs. optimization iterations
+            plt.title("Pitch rate: Performance vs. iteration")
+            plt.plot(self._pitch_rate_optimizer._performance_list, 'k', label='Performance')
+            plt.xlabel('Iteration')
+            plt.legend()
+            plt.savefig(path+'/pitch_rate_performance.png')
+            plt.clf()
+
+            # Pitch rate:  PID gains vs. iteration
+            plt.title("Pitch rate: PID gains vs. iteration")
+            plt.plot(self._pitch_rate_pid._kp_list, 'k', label='kp')
+            plt.plot(self._pitch_rate_pid._ki_list, 'r', label='ki')
+            plt.plot(self._pitch_rate_pid._kd_list, 'b', label='kd')
+            plt.xlabel('Iteration')
+            plt.legend()
+            plt.savefig(path+'/pitch_rate_pid_gains.png')
+            plt.clf()
+        except Exception as e:
+            rospy.logerr("Error in savePlots: %s", e)
+
     #############################################################
     #                       State Machine                       #
     #############################################################
@@ -969,12 +1113,16 @@ class PX4Tuner:
         if (self._current_opt_iteration > self._opt_max_iter):
             rospy.logwarn("Max optimization iterations {} is reached".format(self._opt_max_iter))
             self.stopTuning()
+            if(self._save_plots):
+                self.savePlots()
             return
 
         dt = time.time() - self._opt_start_t
         if (dt > self._opt_max_time):
             rospy.logerr("Max optimization time {} is reached".format(dt))
             self.stopTuning()
+            if(self._save_plots):
+                self.savePlots()
             return
 
         # Update current itertion number
