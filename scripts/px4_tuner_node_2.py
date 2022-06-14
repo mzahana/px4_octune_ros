@@ -15,7 +15,11 @@ from math import ceil
 from octune.optimization import BackProbOptimizer
 from px4_octune_ros.srv import MaxVel, MaxVelRequest
 import pandas as pd
+
+import matplotlib as mpl
+mpl.use('Agg')
 import matplotlib.pyplot as plt
+
 import tf
 import numpy as np
 from datetime import datetime
@@ -881,6 +885,7 @@ class PX4Tuner:
         """
         Saves data plots to predefined files on the disk
         """
+
         if self._is_tuning_running:
             rospy.logerr("Tuning is still running. Stop tuning first.")
             return
@@ -897,6 +902,10 @@ class PX4Tuner:
 
         try:
             L = len(self._roll_rate_init_data['r'])
+            if L < 1:
+                rospy.logerr("[savePlots] No data to plot")
+                return
+
             t = [self._sampling_dt*n for n in range(L)]
             # Roll rate: initial response
             plt.title("Roll rate: Initial response")
