@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
-import os
+import subprocess, os, signal
+import subprocess, signal # to start stop rosbag process
 import time
 import rospy
 from mavros_msgs.msg import AttitudeTarget, ActuatorControl, PositionTarget, State, ExtendedState, RCIn, PlayTuneV2
@@ -32,6 +33,15 @@ from px4_octune_ros.msg import TuningState
 
 import utils
 from process_data import ProcessData
+
+def terminate_process_and_children(p):
+    ps_command = subprocess.Popen("ps -o pid --ppid %d --noheaders" % p.pid, shell=True, stdout=subprocess.PIPE)
+    ps_output = ps_command.stdout.read()
+    retcode = ps_command.wait()
+    assert retcode == 0, "ps command returned %d" % retcode
+    for pid_str in ps_output.split("\n")[:-1]:
+            os.kill(int(pid_str), signal.SIGINT)
+    p.terminate()
 
 class PX4Tuner:
     def __init__(self):
@@ -189,7 +199,7 @@ class PX4Tuner:
         rospy.Subscriber("mavros/setpoint_raw/target_local", PositionTarget, self.cmdPosCb)
 
         # Feedback, angular velocity and linear acceleration
-        rospy.Subscriber("mavros/imu/data_raw", Imu, self.rawImuCb)
+        # rospy.Subscriber("mavros/imu/data_raw", Imu, self.rawImuCb)
         # Feedback, angular velocity and attitude
         rospy.Subscriber("mavros/imu/data", Imu, self.imuCb)
         # Feedback, local pose
@@ -245,12 +255,25 @@ class PX4Tuner:
                 if (tuning_sw_state == self._desired_tuning_sw_state):
                     rospy.logwarn("[rcinCb] Tuning is started through RC input using channel %s", self._tuning_rc_channel+1)
                     self.startTuning()
+                    if self._record_rosbag:
+                        topics="/pitch_rate/tuning_state /roll_rate/tuning_state /mavros/imu/data /mavros/imu/data_raw /mavros/target_actuator_control /mavros/target_actuator_control /mavros/local_position/pose /mavros/local_position/velocity_local /mavros/setpoint_raw/target_local"
+                        args="-o "+self._plot_save_path+" "+"/octune.bag "
+                        command = "rosbag record " + args
+                        try:
+                            os.makedirs(self._plot_save_path)
+                        except Exception as e:
+                            rospy.logwarn("[rcinCb] Error : %s", e)
+                        self._rosbag_process = subprocess.Popen(command, stdin=subprocess.PIPE, shell=True)
                 else:
                     if self._is_tuning_running:
                         rospy.logwarn("[rcinCb] Tuning is stopped through RC input using channel %s", self._tuning_rc_channel+1)
                         self.stopTuning()
                         if self._save_plots:
                             self.savePlots()
+                            try:
+                                terminate_process_and_children(self._rosbag_process)
+                            except Exception as e:
+                                rospy.logwarn("[rcinCb] Could not stop rosbag process. Error: %s", e)
         else: 
             rospy.logerr("[rcinCb] Requested tuning RC channel %s is out of range number of available channels = %s", self._tuning_rc_channel, len(msg.channels))
 
@@ -424,6 +447,12 @@ class PX4Tuner:
         # TODO
         t = rospy.Time(secs=msg.header.stamp.secs, nsecs=msg.header.stamp.nsecs)
         t_micro = t.to_nsec()/1000
+
+        x=msg.angular_velocity.x
+        y=msg.angular_velocity.y
+        z=msg.angular_velocity.z
+
+        self._data._att_rate_dict = self._data.insertData(dict=self._data._att_rate_dict, t=t_micro, x=x, y=y, z=z)
 
         # Construct a quaternion tuple
         q = (
@@ -882,8 +911,8 @@ class PX4Tuner:
             plt.xlabel('Iteration')
             plt.legend()
             plt.show()
-        except:
-            rospy.logerr("Error in plotData")
+        except Exception as e:
+            rospy.logerr("Error in plotData. Error: %s", e)
 
     def savePlots(self):
         """
