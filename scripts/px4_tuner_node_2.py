@@ -278,10 +278,10 @@ class PX4Tuner:
                         self.stopTuning()
                         if self._save_plots:
                             self.savePlots()
-                            try:
-                                terminate_process_and_children(self._rosbag_process)
-                            except Exception as e:
-                                rospy.logwarn("[rcinCb] Could not stop rosbag process. Error: %s", e)
+                            # try:
+                            #     terminate_process_and_children(self._rosbag_process)
+                            # except Exception as e:
+                            #     rospy.logwarn("[rcinCb] Could not stop rosbag process. Error: %s", e)
         else: 
             rospy.logerr("[rcinCb] Requested tuning RC channel %s is out of range number of available channels = %s", self._tuning_rc_channel, len(msg.channels))
 
