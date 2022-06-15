@@ -10,8 +10,16 @@ save_plots: True
 # Desired duration of collected data samples, seconds
 data_len_sec: 2.0
 
+# Raw data frequency, Hz
+raw_data_freq: 50
+
 # Sampling/upsampling time of raw data, seconds
 sampling_dt: 0.01
+
+# Use low pass filter for roll/pitch rate feedback data
+use_lowpass_f: False
+# Low pass cutoff frequency in hz
+lowpass_cutoff: 30.0
 
 # PID sampling time, keep 1 for now
 pid_dt: 1.0

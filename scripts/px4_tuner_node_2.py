@@ -63,8 +63,13 @@ class PX4Tuner:
         # Desired duration of collected data samples, seconds
         self._data_len_sec = rospy.get_param('~data_len_sec', 2.0)
 
+        # Raw data frequency
+        self._raw_data_freq = rospy.get_param('~raw_data_freq', 50.0)
+
         # Sampling/upsampling time, seconds
         self._sampling_dt = rospy.get_param('~sampling_dt', 0.01)
+        self._use_lowpass_f = rospy.get_param('~use_lowpass_f', False)
+        self._lowpass_cutoff = rospy.get_param('~lowpass_cutoff', 30.0)
 
         # PID sampling time
         self._pid_dt = rospy.get_param('~pid_dt', 1)
@@ -79,9 +84,12 @@ class PX4Tuner:
         self._data = ProcessData()
         self._data._sampling_dt = self._sampling_dt
         self._data._data_len_sec = self._data_len_sec
+        self._data._use_low_pass_f = self._use_lowpass_f
+        self._data._cutoff_f = self._lowpass_cutoff
         self._data._raw_data_freq = 50.0
         self._data_buffering_timeout = self._data_len_sec + 0.1
         self._data_buffering_start_t = time.time()
+
 
         # PID gains
         self._roll_rate_pid = utils.PIDGains()
@@ -1094,6 +1102,7 @@ class PX4Tuner:
         self._roll_rate_pid.kp = kp
         self._roll_rate_pid.ki = ki
         self._roll_rate_pid.kd = kd
+        self._roll_rate_pid.updateLists()
 
         # pitch rate
         kp,ki,kd=self.getRatePIDGains(axis='PITCH')
@@ -1104,6 +1113,7 @@ class PX4Tuner:
         self._pitch_rate_pid.kp = kp
         self._pitch_rate_pid.ki = ki
         self._pitch_rate_pid.kd = kd
+        self._pitch_rate_pid.updateLists()
 
         self.resetStates()
         self.GET_DATA_STATE = True
@@ -1195,7 +1205,7 @@ class PX4Tuner:
             # kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=self._sampling_dt) 
             kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=self._pid_dt) 
             # TODO Is the following limiting method safe?
-            K=utils.limitPIDGains(P=kp, I=ki, D=kd, kp_min=0.05, kp_max=0.5, ki_min=0.01, ki_max=0.4, kd_min=0.001, kd_max=0.005)
+            K=utils.limitPIDGains(P=kp, I=ki, D=kd, kp_min=0.05, kp_max=0.6, ki_min=0.01, ki_max=0.4, kd_min=0.001, kd_max=0.005)
             if K is None:
                 rospy.logerr("Roll rate PID coeffs is None. Skipping roll rate gain update")
                 self._opt_failure_counter +=1

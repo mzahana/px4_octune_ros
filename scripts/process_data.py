@@ -1,8 +1,21 @@
+import numpy as np
 from math import ceil
 import pandas as pd
 import matplotlib.pyplot as plt
+from scipy.signal import butter, lfilter, freqz
 import logging
 logging.basicConfig(level=logging.DEBUG)
+
+def butter_lowpass(cutoff, fs, order=5):
+    nyq = 0.5 * fs
+    normal_cutoff = cutoff / nyq
+    b, a = butter(order, normal_cutoff, btype='low', analog=False)
+    return b, a
+
+def butter_lowpass_filter(data, cutoff, fs, order=5):
+    b, a = butter_lowpass(cutoff, fs, order=order)
+    y = lfilter(b, a, data)
+    return y
 
 class ProcessData:
     def __init__(self):
@@ -48,6 +61,10 @@ class ProcessData:
 
         # Flag to start/stop filling data arrays
         self._record_data=False
+
+        # Flag to activate low-pass filter
+        self._use_low_pass_f = True
+        self._cutoff_f = 40.0 # Hz
 
     def resetDict(self):
         """Clears all data dictionaries
@@ -224,6 +241,12 @@ class ProcessData:
         cnt_roll_rate = pd.DataFrame(self._ang_rate_cnt_output_dict['x'], index=cnt_idx, columns =['roll_cnt'])
 
         self._prep_roll_rate_cmd, self._prep_roll_rate, self._prep_roll_cnt_output=self.prepData(cmd_df=cmd_roll_rate, fb_df=fb_roll_rate,cnt_df=cnt_roll_rate, cmd_data_label='cmd_roll_rate', data_label='roll_rate', cnt_label='roll_cnt')
+        if self._use_low_pass_f:
+            # low-pass filter feedback data
+            fs = 1.0/self._sampling_dt
+            order=6
+            y = butter_lowpass_filter(np.array(self._prep_roll_rate), self._cutoff_f, fs, order)
+            self._prep_roll_rate=y.tolist()
         processed_data = (self._prep_roll_rate_cmd, self._prep_roll_rate, self._prep_roll_cnt_output)
 
         return processed_data
@@ -261,6 +284,12 @@ class ProcessData:
         cnt_pitch_rate = pd.DataFrame(self._ang_rate_cnt_output_dict['y'], index=cnt_idx, columns =['pitch_cnt'])
 
         self._prep_pitch_rate_cmd, self._prep_pitch_rate, self._prep_pitch_cnt_output=self.prepData(cmd_df=cmd_pitch_rate, fb_df=fb_pitch_rate,cnt_df=cnt_pitch_rate, cmd_data_label='cmd_pitch_rate', data_label='pitch_rate', cnt_label='pitch_cnt')
+        if self._use_low_pass_f:
+            # low-pass filter feedback data
+            fs = 1.0/self._sampling_dt
+            order=6
+            y = butter_lowpass_filter(np.array(self._prep_pitch_rate), self._cutoff_f, fs, order)
+            self._prep_pitch_rate=y.tolist()
         processed_data = (self._prep_pitch_rate_cmd, self._prep_pitch_rate, self._prep_pitch_cnt_output)
 
         return processed_data
