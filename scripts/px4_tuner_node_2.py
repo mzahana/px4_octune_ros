@@ -177,7 +177,7 @@ class PX4Tuner:
         self._start_tone_str=rospy.get_param('~start_tone_str', 'MFT100e8b8b')
         self._stop_tone_str=rospy.get_param('~stop_tone_str', 'MFT100e8b8a')
         self._error_tone_str=rospy.get_param('~error_tone_str', 'MBT200a8a8a8PaaaP')
-        self._ok_tone_str=rospy.get_param('~error_tone_str', 'MFT200e8a8a')
+        self._ok_tone_str=rospy.get_param('~ok_tone_str', 'MFT200e8a8a')
 
 
         # ----------------------------------- Publishers -------------------------- #
