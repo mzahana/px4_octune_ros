@@ -263,15 +263,15 @@ class PX4Tuner:
                 if (tuning_sw_state == self._desired_tuning_sw_state):
                     rospy.logwarn("[rcinCb] Tuning is started through RC input using channel %s", self._tuning_rc_channel+1)
                     self.startTuning()
-                    if self._record_rosbag:
-                        topics="/pitch_rate/tuning_state /roll_rate/tuning_state /mavros/imu/data /mavros/imu/data_raw /mavros/target_actuator_control /mavros/target_actuator_control /mavros/local_position/pose /mavros/local_position/velocity_local /mavros/setpoint_raw/target_local"
-                        args="-o "+self._plot_save_path+" "+"/octune.bag "
-                        command = "rosbag record " + args
-                        try:
-                            os.makedirs(self._plot_save_path)
-                        except Exception as e:
-                            rospy.logwarn("[rcinCb] Error : %s", e)
-                        self._rosbag_process = subprocess.Popen(command, stdin=subprocess.PIPE, shell=True)
+                    # if self._record_rosbag:
+                    #     topics="/pitch_rate/tuning_state /roll_rate/tuning_state /mavros/imu/data /mavros/imu/data_raw /mavros/target_actuator_control /mavros/target_actuator_control /mavros/local_position/pose /mavros/local_position/velocity_local /mavros/setpoint_raw/target_local"
+                    #     args="-o "+self._plot_save_path+" "+"/octune.bag "
+                    #     command = "rosbag record " + args
+                    #     try:
+                    #         os.makedirs(self._plot_save_path)
+                    #     except Exception as e:
+                    #         rospy.logwarn("[rcinCb] Error : %s", e)
+                    #     self._rosbag_process = subprocess.Popen(command, stdin=subprocess.PIPE, shell=True)
                 else:
                     if self._is_tuning_running:
                         rospy.logwarn("[rcinCb] Tuning is stopped through RC input using channel %s", self._tuning_rc_channel+1)
