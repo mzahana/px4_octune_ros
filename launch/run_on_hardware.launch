@@ -3,6 +3,7 @@
 
     <include if="$(env RUN_MAVROS)" file="$(find mavros)/launch/px4.launch">
         <arg name="fcu_url" value="$(env FCU_URL)"/>
+        <arg name="gcs_url" default="$(env GCS_URL)" />
         <arg name="tgt_system" value="$(optenv MAVLINK_ID 1)"/>
     </include>
 
