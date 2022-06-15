@@ -865,6 +865,9 @@ class PX4Tuner:
 
             # ----------------------------------- #
             L = len(self._pitch_rate_init_data['r'])
+            if L < 1:
+                rospy.logerr("[savePlots] No pitch rate data to plot")
+                return
             t = [self._sampling_dt*n for n in range(L)]
             # Pitch rate: initial response
             plt.title("Pitch rate: Initial response")
@@ -925,7 +928,7 @@ class PX4Tuner:
 
         L = len(self._roll_rate_init_data['r'])
         if L < 1:
-            rospy.logerr("[savePlots] No data to plot")
+            rospy.logerr("[savePlots] No roll rate data to plot")
             return
 
         t = datetime.now()
@@ -991,8 +994,12 @@ class PX4Tuner:
             plt.savefig(path+'/roll_rate_pid_gains.png')
             plt.clf()
 
-            # ----------------------------------- #
+            # ----------------- pitch rate ------------------ #
             L = len(self._pitch_rate_init_data['r'])
+            if L < 1:
+                rospy.logerr("[savePlots] No pitch rate data to plot")
+                return
+            
             t = [self._sampling_dt*n for n in range(L)]
             # Pitch rate: initial response
             plt.title("Pitch rate: Initial response")
