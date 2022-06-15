@@ -244,7 +244,7 @@ class ProcessData:
         if self._use_low_pass_f:
             # low-pass filter feedback data
             fs = 1.0/self._sampling_dt
-            order=6
+            order=2
             y = butter_lowpass_filter(np.array(self._prep_roll_rate), self._cutoff_f, fs, order)
             self._prep_roll_rate=y.tolist()
         processed_data = (self._prep_roll_rate_cmd, self._prep_roll_rate, self._prep_roll_cnt_output)
@@ -287,7 +287,7 @@ class ProcessData:
         if self._use_low_pass_f:
             # low-pass filter feedback data
             fs = 1.0/self._sampling_dt
-            order=6
+            order=2
             y = butter_lowpass_filter(np.array(self._prep_pitch_rate), self._cutoff_f, fs, order)
             self._prep_pitch_rate=y.tolist()
         processed_data = (self._prep_pitch_rate_cmd, self._prep_pitch_rate, self._prep_pitch_cnt_output)
