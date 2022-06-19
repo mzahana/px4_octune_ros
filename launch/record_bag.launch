@@ -3,5 +3,5 @@
 
     <arg name="topics" default="/mavros/target_actuator_control /mavros/imu/data /mavros/imu/data_raw /octune/roll_rate/tuning_state /octune/pitch_rate/tuning_state /mavros/state /mavros/setpoint_raw/attitude /mavros/setpoint_raw/target_local /mavros/local_position/pose /mavros/local_position/velocity_local /mavros/rc/in" />
     <arg name="file_path" default="/root/shared_volume"/>
-    <node name="octune_rosbag_record" type="rosbag" args="record -o $(arg file_path)/octune.bag $(arg topics)" />
+    <node name="octune_rosbag_record" pkg="rosbag" type="record" args="record -o $(arg file_path)/octune.bag $(arg topics)" output="screen"/>
 </launch>
