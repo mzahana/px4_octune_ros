@@ -39,6 +39,14 @@ opt_max_failures: 10
 # Recommended to set it True to avoid divergence
 use_optimal_alpha: True
 
+# Learning rate reduction factor
+# Used to reduce the optimal learning rate by a factor (between 0 and 1)
+# to gurantee convergence.
+# Value of 0 will use the same optimal learning rate (alpha) which will no gurantee convergence
+# Value of 1 will  resul in 0 learning rate and no effect on the learning
+# A value between .05 and 0.1 is OK
+alpha_factor: 0.05
+
 # Learning rate
 learning_rate: 0.001
 

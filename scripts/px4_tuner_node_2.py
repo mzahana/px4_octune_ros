@@ -112,6 +112,7 @@ class PX4Tuner:
         self._roll_rate_optimizer._use_optimal_alpha = self._use_optimal_alpha # optimize learning rate to gurantee convergence
         self._roll_rate_optimizer._use_adam = False # Use gradient descent
         self._roll_rate_optimizer._obj_w = 1.0
+        self._roll_rate_optimizer._alpha_factor = rospy.get_param("~alpha_factor", 0.1) # \in [0,1)
         # Useful for plotting
         self._roll_rate_init_data = {'r':[], 'u':[], 'y':[]}
         self._roll_rate_final_data = {'r':[], 'u':[], 'y':[]}
@@ -125,6 +126,7 @@ class PX4Tuner:
         self._pitch_rate_optimizer._use_optimal_alpha = self._use_optimal_alpha # optimize learning rate to gurantee convergence
         self._pitch_rate_optimizer._use_adam = False # Use gradient descent
         self._pitch_rate_optimizer._obj_w = 1.0
+        self._pitch_rate_optimizer._alpha_factor = rospy.get_param("~alpha_factor", 0.1) # \in [0,1)
         # Useful for plotting
         self._pitch_rate_init_data = {'r':[], 'u':[], 'y':[]}
         self._pitch_rate_final_data = {'r':[], 'u':[], 'y':[]}
