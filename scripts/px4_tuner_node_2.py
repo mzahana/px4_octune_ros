@@ -189,8 +189,8 @@ class PX4Tuner:
 
 
         # ----------------------------------- Publishers -------------------------- #
-        self._roll_rate_pub = rospy.Publisher("roll_rate/tuning_state", TuningState, queue_size=10)
-        self._pitch_rate_pub = rospy.Publisher("pitch_rate/tuning_state", TuningState, queue_size=10)
+        self._roll_rate_pub = rospy.Publisher("octune/roll_rate/tuning_state", TuningState, queue_size=10)
+        self._pitch_rate_pub = rospy.Publisher("octune/pitch_rate/tuning_state", TuningState, queue_size=10)
         self._tone_pub=rospy.Publisher('mavros/play_tune', PlayTuneV2, queue_size=5)
 
         # ----------------------------------- Subscribers -------------------------- #
