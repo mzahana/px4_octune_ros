@@ -14,21 +14,25 @@ data_len_sec: 2.0
 raw_data_freq: 50
 
 # Sampling/upsampling time of raw data, seconds
-sampling_dt: 0.01
+sampling_dt: 0.016
 
 # Use low pass filter for roll/pitch rate feedback data
 use_lowpass_f: False
 # Low pass cutoff frequency in hz
 lowpass_cutoff: 30.0
 
+
+# Multiplier to the controller output
+use_cnt_scaler: False
+
 # PID sampling time, keep 1 for now
-pid_dt: 1.0
+pid_dt: 0.02
 
 # Maximum number of optimization iterations
 opt_max_iter: 1000
 
 # Maximum optimization time, seconds
-opt_max_time: 60.0
+opt_max_time: 120.0
 
 # Maximum number of optimization failures before giving up
 # This includes differetn type of failures, e.g. failing to get/set PID gain, failing the optimization iteration, ..etc

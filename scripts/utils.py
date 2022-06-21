@@ -103,9 +103,20 @@ def getPIDGainsFromCoeff(num=None, dt=1):
     # ki = (n0+n1+n2)/(2.*dt)
     # kd = dt*(n0 - n1 + n2)/8.
 
+    # Kinda works!!
+    # kp = -2*n2 - n1
+    # ki = (n0+n1+n2)/dt
+    # kd = n2*dt
+
+    # This applies in  continueous time TF ONLY!!
+    # kp=n1
+    # ki=n2
+    # kd=n0
+
     kp = -2*n2 - n1
-    ki = (n0+n1+n2)/dt
+    ki = (n0+n1+n2)
     kd = n2*dt
+
 
     return kp,ki,kd
 
@@ -146,9 +157,20 @@ def getPIDCoeffFromGains(kp=None, ki=None, kd=None, dt=1):
     # n1 = (2*ki*dt**2 - 8*kd) / 2./dt
     # n2 = (ki*dt**2 - 2*dt*kp + 4*kd) /2./dt
 
-    n0 = kp + kd/dt + ki*dt
+    # Kinda worls!!
+    # n0 = kp + kd/dt + ki*dt
+    # n1 = -2*kd/dt - kp
+    # n2 = kd/dt
+
+    # This applies in  continueous time TF ONLY!!
+    # n0=kd
+    # n1=kp
+    # n2=ki
+
+    n0 = kp + kd/dt + ki
     n1 = -2*kd/dt - kp
     n2 = kd/dt
+
 
     num=[n0,n1,n2]
 

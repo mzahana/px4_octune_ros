@@ -104,6 +104,9 @@ class PX4Tuner:
         self._use_optimal_alpha = rospy.get_param('~use_optimal_alpha', True)
         self._learning_rate = rospy.get_param('~learning_rate', 0.001)
 
+        # multiplier to the controller output signal!
+        self._use_cnt_scaler = rospy.get_param("~use_cnt_scaler", False)
+
         # Optimization objects
         self._roll_rate_optimizer=BackProbOptimizer()
         self._roll_rate_optimizer._debug=False
@@ -1194,7 +1197,11 @@ class PX4Tuner:
         rospy.loginfo_throttle(1, "Optimization iteration %s", self._current_opt_iteration)
 
         # update roll gains
-        self._roll_rate_optimizer.setSignals(r=np.array(self._data._prep_roll_rate_cmd),u=np.array(self._data._prep_roll_cnt_output),y=np.array(self._data._prep_roll_rate))
+        if(self._use_cnt_scaler):
+            self._cnt_scaler = 1.0/self._roll_rate_pid.kp
+        else:
+            self._cnt_scaler =1.0
+        self._roll_rate_optimizer.setSignals(r=np.array(self._data._prep_roll_rate_cmd),u=self._cnt_scaler*np.array(self._data._prep_roll_cnt_output),y=np.array(self._data._prep_roll_rate))
         # num=utils.getPIDCoeffFromGains(kp=self._roll_rate_pid.kp, ki=self._roll_rate_pid.ki, kd=self._roll_rate_pid.kd, dt=self._sampling_dt)
         num=utils.getPIDCoeffFromGains(kp=self._roll_rate_pid.kp, ki=self._roll_rate_pid.ki, kd=self._roll_rate_pid.kd, dt=self._pid_dt)
         # self._roll_rate_optimizer.setContCoeffs(den_coeff=[1,0,-1], num_coeff=num)
@@ -1210,7 +1217,7 @@ class PX4Tuner:
             # kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=self._sampling_dt) 
             kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=self._pid_dt) 
             # TODO Is the following limiting method safe?
-            K=utils.limitPIDGains(P=kp, I=ki, D=kd, kp_min=0.05, kp_max=0.6, ki_min=0.01, ki_max=0.4, kd_min=0.001, kd_max=0.005)
+            K=utils.limitPIDGains(P=kp, I=ki, D=kd, kp_min=0.05, kp_max=0.6, ki_min=0.01, ki_max=0.4, kd_min=0.001, kd_max=0.009)
             if K is None:
                 rospy.logerr("Roll rate PID coeffs is None. Skipping roll rate gain update")
                 self._opt_failure_counter +=1
@@ -1226,7 +1233,11 @@ class PX4Tuner:
                     self._roll_rate_pid.updateLists()
 
         # update pitch gains
-        self._pitch_rate_optimizer.setSignals(r=np.array(self._data._prep_pitch_rate_cmd),u=np.array(self._data._prep_pitch_cnt_output),y=np.array(self._data._prep_pitch_rate))
+        if(self._use_cnt_scaler):
+            self._cnt_scaler = 1.0/self._pitch_rate_pid.kp
+        else:
+            self._cnt_scaler =1.0
+        self._pitch_rate_optimizer.setSignals(r=np.array(self._data._prep_pitch_rate_cmd),u=self._cnt_scaler*np.array(self._data._prep_pitch_cnt_output),y=np.array(self._data._prep_pitch_rate))
         # num=utils.getPIDCoeffFromGains(kp=self._pitch_rate_pid.kp, ki=self._pitch_rate_pid.ki, kd=self._pitch_rate_pid.kd, dt=self._sampling_dt)
         num=utils.getPIDCoeffFromGains(kp=self._pitch_rate_pid.kp, ki=self._pitch_rate_pid.ki, kd=self._pitch_rate_pid.kd,dt=self._pid_dt)
         # self._pitch_rate_optimizer.setContCoeffs(den_coeff=[1,0,-1], num_coeff=num)
@@ -1241,7 +1252,7 @@ class PX4Tuner:
             # kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=self._sampling_dt) 
             kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=self._pid_dt) 
             # TODO Is the following limiting method safe?
-            K=utils.limitPIDGains(P=kp, I=ki, D=kd, kp_min=0.05, kp_max=0.6, ki_min=0.01, ki_max=0.4, kd_min=0.001, kd_max=0.005)
+            K=utils.limitPIDGains(P=kp, I=ki, D=kd, kp_min=0.05, kp_max=0.6, ki_min=0.01, ki_max=0.4, kd_min=0.001, kd_max=0.009)
             if K is None:
                 rospy.logerr("Pitch rate PID coeffs is None. Skipping pitch rate gain update")
                 self._opt_failure_counter +=1
@@ -1389,7 +1400,7 @@ class PX4Tuner:
                 # kp,ki,kd=self.getPIDGainsFromCoeff(num=num, dt=1.0) # Always keep dt=1.0 !!
                 kp,ki,kd=self.getPIDGainsFromCoeff(num=num, dt=self._sampling_dt) 
                 # TODO Is the following limiting method safe?
-                kp,ki,kd=self.limitPIDGains(P=kp, I=ki, D=kd, kp_min=0.05, kp_max=0.5, ki_min=0.01, ki_max=0.4, kd_min=0.001, kd_max=0.005)
+                kp,ki,kd=self.limitPIDGains(P=kp, I=ki, D=kd, kp_min=0.05, kp_max=0.5, ki_min=0.01, ki_max=0.4, kd_min=0.001, kd_max=0.1)
                 if kp is None:
                     rospy.logerr("PID coeffs is None. Exiting tuning process")
                     self._is_tuning_running=False
