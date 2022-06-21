@@ -419,9 +419,12 @@ class PX4Tuner:
         t = rospy.Time(secs=msg.header.stamp.secs, nsecs=msg.header.stamp.nsecs)
         t_micro = t.to_nsec()/1000
 
-        x=msg.controls[0] # roll index
-        y= -1 * msg.controls[1] # pitch index
-        z=msg.controls[2] # yaw index
+        # The -ve sign in y/z axes are because the ROS topics of angular velocities (setpoint & actual) are in ROS frame convention (ENU?).
+        # However, the actuator controls are not transformed into ROS frame convention. So, it's transformed here!
+        # See : https://github.com/mavlink/mavros/blob/9ebb8d698a6855bfda026ea978d270fa703557dc/mavros/src/plugins/actuator_control.cpp#L89
+        x=  1.0*msg.controls[0] # roll index
+        y= -1.0*msg.controls[1] # pitch index
+        z= -1.0*msg.controls[2] # yaw index
 
         self._data._ang_rate_cnt_output_dict = self._data.insertData(dict=self._data._ang_rate_cnt_output_dict, t=t_micro, x=x, y=y, z=z)
             # if self._debug:
