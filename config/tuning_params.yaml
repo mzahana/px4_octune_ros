@@ -54,6 +54,14 @@ alpha_factor: 0.05
 # Learning rate
 learning_rate: 0.001
 
+# The value of the optimization objective function below which a convergence is identified
+conv_error_threshold: 5.0
+
+# The minumum number of objective/error values to use to computer the average performance error
+#   The average of those (counts of) values will be compared with conv_error_threshold.
+#   If it's <= conv_error_threshold, it's considered convergence
+conv_error_count: 5
+
 # Channel ID of the RC switch in /mavroc/rc/in, starts from 0
 reset_rc_channel: 7
 # The desired value of the msg.channel[rc_channel] to do the PID reset

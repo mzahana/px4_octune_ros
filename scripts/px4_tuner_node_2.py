@@ -1,20 +1,16 @@
 #!/usr/bin/env python
 
 import subprocess, os, signal
-import subprocess, signal # to start stop rosbag process
 import time
 import rospy
-from mavros_msgs.msg import AttitudeTarget, ActuatorControl, PositionTarget, State, ExtendedState, RCIn, PlayTuneV2
-from mavros_msgs.srv import MessageInterval, MessageIntervalRequest, MessageIntervalResponse
-from mavros_msgs.srv import ParamGet, ParamGetRequest, ParamGetResponse, ParamSet, ParamSetRequest, ParamSetResponse
-from mavros_msgs.srv import CommandBool, SetMode
-from rospy.core import logerr
+from mavros_msgs.msg import AttitudeTarget, ActuatorControl, PositionTarget, State, RCIn, PlayTuneV2
+from mavros_msgs.srv import MessageInterval, MessageIntervalRequest
+from mavros_msgs.srv import ParamGet, ParamSet, ParamSetRequest
 from sensor_msgs.msg import Imu
 from geometry_msgs.msg import PoseStamped, TwistStamped, Point, Vector3
-from std_srvs.srv import Empty, Trigger, TriggerRequest
+from std_srvs.srv import Empty
 from math import ceil
 from octune.optimization import BackProbOptimizer
-from px4_octune_ros.srv import MaxVel, MaxVelRequest
 import pandas as pd
 
 v=os.environ['SIMULATION']
@@ -106,6 +102,15 @@ class PX4Tuner:
 
         # multiplier to the controller output signal!
         self._use_cnt_scaler = rospy.get_param("~use_cnt_scaler", False)
+
+        # Stopping parameters
+        # The value of the optimization objective function below which a convergence is identified
+        self._conv_error_threshold = rospy.get_param('~conv_error_threshold', 5.0)
+        # The minumum number of objective/error values to use to computer the average performance error
+        #   The average of those (counts of) values will be compared with _conv_error_threshold.
+        #   If it's <= _conv_error_threshold, it's considered convergence
+        self._conv_error_count = rospy.get_param('~conv_error_count', 5)
+
 
         # Optimization objects
         self._roll_rate_optimizer=BackProbOptimizer()
@@ -1192,81 +1197,92 @@ class PX4Tuner:
                 self.savePlots()
             return
 
+        roll_converged = self._roll_rate_optimizer.isConverged(count=self._conv_error_count, err_threshold=self._conv_error_threshold)
+        pitch_converged = self._pitch_rate_optimizer.isConverged(count=self._conv_error_count, err_threshold=self._conv_error_threshold)
+        if (roll_converged and pitch_converged):
+            rospy.loginfo("Roll and Pitch rates converged")
+            self.stopTuning()
+            if(self._save_plots):
+                self.savePlots()
+            return
+
         # Update current itertion number
         self._current_opt_iteration +=1
-        rospy.loginfo_throttle(1, "Optimization iteration %s", self._current_opt_iteration)
+        rospy.loginfo("Optimization iteration %s", self._current_opt_iteration)
 
-        # update roll gains
-        if(self._use_cnt_scaler):
-            self._cnt_scaler = 1.0/self._roll_rate_pid.kp
-        else:
-            self._cnt_scaler =1.0
-        self._roll_rate_optimizer.setSignals(r=np.array(self._data._prep_roll_rate_cmd),u=self._cnt_scaler*np.array(self._data._prep_roll_cnt_output),y=np.array(self._data._prep_roll_rate))
-        # num=utils.getPIDCoeffFromGains(kp=self._roll_rate_pid.kp, ki=self._roll_rate_pid.ki, kd=self._roll_rate_pid.kd, dt=self._sampling_dt)
-        num=utils.getPIDCoeffFromGains(kp=self._roll_rate_pid.kp, ki=self._roll_rate_pid.ki, kd=self._roll_rate_pid.kd, dt=self._pid_dt)
-        # self._roll_rate_optimizer.setContCoeffs(den_coeff=[1,0,-1], num_coeff=num)
-        self._roll_rate_optimizer.setContCoeffs(den_coeff=[1,-1], num_coeff=num)
-        good =self._roll_rate_optimizer.update(iter=self._current_opt_iteration)
-        if not good:
-            rospy.logerr("Roll rate optimization was not successful in iteration {}.".format(self._current_opt_iteration))
-            self._opt_failure_counter +=1
-        else: # Good
-            # Get new conrtroller coeffs
-            den,num=self._roll_rate_optimizer.getNewContCoeff()
-            print("PID den = \n", den)
-            # kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=self._sampling_dt) 
-            kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=self._pid_dt) 
-            # TODO Is the following limiting method safe?
-            K=utils.limitPIDGains(P=kp, I=ki, D=kd, kp_min=0.05, kp_max=0.6, ki_min=0.01, ki_max=0.4, kd_min=0.001, kd_max=0.009)
-            if K is None:
-                rospy.logerr("Roll rate PID coeffs is None. Skipping roll rate gain update")
-                self._opt_failure_counter +=1
+        if (not roll_converged):
+            # update roll gains
+            if(self._use_cnt_scaler):
+                self._cnt_scaler = 1.0/self._roll_rate_pid.kp
             else:
-                good=self.setRatePIDGains(axis='ROLL', kP=K[0], kI=K[1], kD=K[2])
-                if not good:
-                    rospy.logerr("Error in sending new roll rate pid gains to PX4")
+                self._cnt_scaler =1.0
+            self._roll_rate_optimizer.setSignals(r=np.array(self._data._prep_roll_rate_cmd),u=self._cnt_scaler*np.array(self._data._prep_roll_cnt_output),y=np.array(self._data._prep_roll_rate))
+            # num=utils.getPIDCoeffFromGains(kp=self._roll_rate_pid.kp, ki=self._roll_rate_pid.ki, kd=self._roll_rate_pid.kd, dt=self._sampling_dt)
+            num=utils.getPIDCoeffFromGains(kp=self._roll_rate_pid.kp, ki=self._roll_rate_pid.ki, kd=self._roll_rate_pid.kd, dt=self._pid_dt)
+            # self._roll_rate_optimizer.setContCoeffs(den_coeff=[1,0,-1], num_coeff=num)
+            self._roll_rate_optimizer.setContCoeffs(den_coeff=[1,-1], num_coeff=num)
+            good =self._roll_rate_optimizer.update(iter=self._current_opt_iteration)
+            if not good:
+                rospy.logerr("Roll rate optimization was not successful in iteration {}.".format(self._current_opt_iteration))
+                self._opt_failure_counter +=1
+            else: # Good
+                # Get new conrtroller coeffs
+                den,num=self._roll_rate_optimizer.getNewContCoeff()
+                print("PID den = \n", den)
+                # kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=self._sampling_dt) 
+                kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=self._pid_dt) 
+                # TODO Is the following limiting method safe?
+                K=utils.limitPIDGains(P=kp, I=ki, D=kd, kp_min=0.05, kp_max=0.6, ki_min=0.01, ki_max=0.4, kd_min=0.001, kd_max=0.009)
+                if K is None:
+                    rospy.logerr("Roll rate PID coeffs is None. Skipping roll rate gain update")
                     self._opt_failure_counter +=1
                 else:
-                    self._roll_rate_pid.kp = K[0]
-                    self._roll_rate_pid.ki = K[1]
-                    self._roll_rate_pid.kd = K[2]
-                    self._roll_rate_pid.updateLists()
+                    good=self.setRatePIDGains(axis='ROLL', kP=K[0], kI=K[1], kD=K[2])
+                    if not good:
+                        rospy.logerr("Error in sending new roll rate pid gains to PX4")
+                        self._opt_failure_counter +=1
+                    else:
+                        self._roll_rate_pid.kp = K[0]
+                        self._roll_rate_pid.ki = K[1]
+                        self._roll_rate_pid.kd = K[2]
+                        self._roll_rate_pid.updateLists()
 
-        # update pitch gains
-        if(self._use_cnt_scaler):
-            self._cnt_scaler = 1.0/self._pitch_rate_pid.kp
-        else:
-            self._cnt_scaler =1.0
-        self._pitch_rate_optimizer.setSignals(r=np.array(self._data._prep_pitch_rate_cmd),u=self._cnt_scaler*np.array(self._data._prep_pitch_cnt_output),y=np.array(self._data._prep_pitch_rate))
-        # num=utils.getPIDCoeffFromGains(kp=self._pitch_rate_pid.kp, ki=self._pitch_rate_pid.ki, kd=self._pitch_rate_pid.kd, dt=self._sampling_dt)
-        num=utils.getPIDCoeffFromGains(kp=self._pitch_rate_pid.kp, ki=self._pitch_rate_pid.ki, kd=self._pitch_rate_pid.kd,dt=self._pid_dt)
-        # self._pitch_rate_optimizer.setContCoeffs(den_coeff=[1,0,-1], num_coeff=num)
-        self._pitch_rate_optimizer.setContCoeffs(den_coeff=[1,-1], num_coeff=num)
-        good =self._pitch_rate_optimizer.update(iter=self._current_opt_iteration)
-        if not good:
-            rospy.logerr("Pitch rate optimization was not successful in iteration {}.".format(self._current_opt_iteration))
-            self._opt_failure_counter +=1
-        else: # Good
-            # Get new conrtroller coeffs
-            den,num=self._pitch_rate_optimizer.getNewContCoeff()
-            # kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=self._sampling_dt) 
-            kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=self._pid_dt) 
-            # TODO Is the following limiting method safe?
-            K=utils.limitPIDGains(P=kp, I=ki, D=kd, kp_min=0.05, kp_max=0.6, ki_min=0.01, ki_max=0.4, kd_min=0.001, kd_max=0.009)
-            if K is None:
-                rospy.logerr("Pitch rate PID coeffs is None. Skipping pitch rate gain update")
-                self._opt_failure_counter +=1
+        if (not pitch_converged):
+            # update pitch gains
+            if(self._use_cnt_scaler):
+                self._cnt_scaler = 1.0/self._pitch_rate_pid.kp
             else:
-                good=self.setRatePIDGains(axis='PITCH', kP=K[0], kI=K[1], kD=K[2])
-                if not good:
-                    rospy.logerr("Error in sending new pitch rate pid gains to PX4")
+                self._cnt_scaler =1.0
+            self._pitch_rate_optimizer.setSignals(r=np.array(self._data._prep_pitch_rate_cmd),u=self._cnt_scaler*np.array(self._data._prep_pitch_cnt_output),y=np.array(self._data._prep_pitch_rate))
+            # num=utils.getPIDCoeffFromGains(kp=self._pitch_rate_pid.kp, ki=self._pitch_rate_pid.ki, kd=self._pitch_rate_pid.kd, dt=self._sampling_dt)
+            num=utils.getPIDCoeffFromGains(kp=self._pitch_rate_pid.kp, ki=self._pitch_rate_pid.ki, kd=self._pitch_rate_pid.kd,dt=self._pid_dt)
+            # self._pitch_rate_optimizer.setContCoeffs(den_coeff=[1,0,-1], num_coeff=num)
+            self._pitch_rate_optimizer.setContCoeffs(den_coeff=[1,-1], num_coeff=num)
+            good =self._pitch_rate_optimizer.update(iter=self._current_opt_iteration)
+            if not good:
+                rospy.logerr("Pitch rate optimization was not successful in iteration {}.".format(self._current_opt_iteration))
+                self._opt_failure_counter +=1
+            else: # Good
+                # Get new conrtroller coeffs
+                den,num=self._pitch_rate_optimizer.getNewContCoeff()
+                # kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=self._sampling_dt) 
+                kp,ki,kd=utils.getPIDGainsFromCoeff(num=num, dt=self._pid_dt) 
+                # TODO Is the following limiting method safe?
+                K=utils.limitPIDGains(P=kp, I=ki, D=kd, kp_min=0.05, kp_max=0.6, ki_min=0.01, ki_max=0.4, kd_min=0.001, kd_max=0.009)
+                if K is None:
+                    rospy.logerr("Pitch rate PID coeffs is None. Skipping pitch rate gain update")
                     self._opt_failure_counter +=1
                 else:
-                    self._pitch_rate_pid.kp = K[0]
-                    self._pitch_rate_pid.ki = K[1]
-                    self._pitch_rate_pid.kd = K[2]
-                    self._pitch_rate_pid.updateLists()
-                    # rospy.loginfo_throttle(1, "Pitch rate PID gains: P=%s I=%s D=%s", self._pitch_rate_pid.kp, self._pitch_rate_pid.ki, self._pitch_rate_pid.kd)
+                    good=self.setRatePIDGains(axis='PITCH', kP=K[0], kI=K[1], kD=K[2])
+                    if not good:
+                        rospy.logerr("Error in sending new pitch rate pid gains to PX4")
+                        self._opt_failure_counter +=1
+                    else:
+                        self._pitch_rate_pid.kp = K[0]
+                        self._pitch_rate_pid.ki = K[1]
+                        self._pitch_rate_pid.kd = K[2]
+                        self._pitch_rate_pid.updateLists()
+                        # rospy.loginfo_throttle(1, "Pitch rate PID gains: P=%s I=%s D=%s", self._pitch_rate_pid.kp, self._pitch_rate_pid.ki, self._pitch_rate_pid.kd)
 
         # All good, update lists, go and collect data again to prepare for a new optimization iteration
 
