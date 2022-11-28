@@ -38,3 +38,22 @@ A ROS package for interfacing [OCTUNE algorithm](https://github.com/mzahana/octu
     * `RUN_MAVROS=True`
     * `RUN_OCTUNE=True`
     * `OCTUNE_PARAMS_YAML=path_to_octune_yaml file` Similar to the [config/tuning_params.yaml](https://github.com/mzahana/px4_octune_ros/blob/main/config/tuning_params.yaml)
+
+# Citation
+If you use this work in your research, please cite the following reference.
+```
+
+@Article{s22239240,
+AUTHOR = {Abdelkader, Mohamed and Mabrok, Mohamed and Koubaa, Anis},
+TITLE = {OCTUNE: Optimal Control Tuning Using Real-Time Data with Algorithm and Experimental Results},
+JOURNAL = {Sensors},
+VOLUME = {22},
+YEAR = {2022},
+NUMBER = {23},
+ARTICLE-NUMBER = {9240},
+URL = {https://www.mdpi.com/1424-8220/22/23/9240},
+ISSN = {1424-8220},
+ABSTRACT = {Autonomous robots require control tuning to optimize their performance, such as optimal trajectory tracking. Controllers, such as the Proportional&ndash;Integral&ndash;Derivative (PID) controller, which are commonly used in robots, are usually tuned by a cumbersome manual process or offline data-driven methods. Both approaches must be repeated if the system configuration changes or becomes exposed to new environmental conditions. In this work, we propose a novel algorithm that can perform online optimal control tuning (OCTUNE) of a discrete linear time-invariant (LTI) controller in a classical feedback system without the knowledge of the plant dynamics. The OCTUNE algorithm uses the backpropagation optimization technique to optimize the controller parameters. Furthermore, convergence guarantees are derived using the Lyapunov stability theory to ensure stable iterative tuning using real-time data. We validate the algorithm in realistic simulations of a quadcopter model with PID controllers using the known Gazebo simulator and a real quadcopter platform. Simulations and actual experiment results show that OCTUNE can be effectively used to automatically tune the UAV PID controllers in real-time, with guaranteed convergence. Finally, we provide an open-source implementation of the OCTUNE algorithm, which can be adapted for different applications.},
+DOI = {10.3390/s22239240}
+}
+```
